@@ -1,0 +1,15 @@
+{
+  "name": "lovable-local",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Single-user, local clone of a prompt-to-app builder: multi-project registry, agent with file tools, per-project Vite dev servers, live preview, git history.",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "engines": {
+    "node": ">=20.10"
+  }
+}

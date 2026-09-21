@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lovable Local</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- ============================ sidebar ============================ -->
+      <aside id="sidebar">
+        <div class="brand">
+          <span class="brand-mark">♥</span>
+          <div class="brand-text">
+            <strong>Lovable Local</strong>
+            <small>single-user · on-device</small>
+          </div>
+        </div>
+
+        <button id="new-project" class="btn btn-primary btn-block">
+          <span>New project</span>
+        </button>
+        <button id="import-project" class="btn btn-ghost btn-block btn-sm">Import folder…</button>
+
+        <div class="sidebar-section">
+          <div class="sidebar-label">Projects <span id="project-count" class="count">0</span></div>
+          <nav id="project-list" class="project-list" aria-label="Projects"></nav>
+        </div>
+
+        <div class="sidebar-footer">
+          <div id="provider-pill" class="provider-pill" title="Model provider">
+            <span class="dot"></span><span id="provider-pill-text">no provider</span>
+          </div>
+          <div class="footer-actions">
+            <button id="open-settings" class="btn btn-ghost btn-sm">Settings</button>
+            <button id="theme-toggle" class="btn btn-ghost btn-sm icon-btn" title="Toggle theme" aria-label="Toggle theme">☾</button>
+          </div>
+        </div>
+      </aside>
+
+      <!-- ============================= main ============================== -->
+      <main id="main">
+        <!-- project grid / empty state -->
+        <section id="home" class="home">
+          <div class="home-inner">
+            <h1>What are you building?</h1>
+            <p class="muted">
+              Each project is a real Vite + React + TypeScript + Tailwind app on your disk, with its
+              own git history and its own dev server. Create one, describe it in the chat, and watch
+              the preview update.
+            </p>
+
+            <form id="home-create" class="home-create">
+              <input id="home-name" type="text" placeholder="e.g. Invoice Tracker" autocomplete="off" maxlength="60" />
+              <button class="btn btn-primary" type="submit">Create project</button>
+            </form>
+
+            <div id="home-grid" class="project-grid"></div>
+          </div>
+        </section>
+
+        <!-- active project workspace -->
+        <section id="workspace" class="workspace" hidden>
+          <header id="topbar">
+            <div class="topbar-title">
+              <h2 id="ws-name">Project</h2>
+              <div class="topbar-meta">
+                <span id="ws-status" class="status-pill"><i class="dot"></i>stopped</span>
+                <span id="ws-port" class="mono"></span>
+                <span id="ws-usage" class="mono muted" title="Cumulative tokens for this project"></span>
+                <span id="ws-path" class="mono muted" title="Project directory"></span>
+              </div>
+            </div>
+
+            <nav class="tabs" id="tabs">
+              <button class="tab active" data-view="preview">Preview</button>
+              <button class="tab" data-view="code">Code</button>
+              <button class="tab" data-view="history">History</button>
+              <button class="tab" data-view="logs">Logs <span id="log-badge" class="badge" hidden></span></button>
+            </nav>
+
+            <div class="topbar-actions">
+              <button id="btn-typecheck" class="btn btn-ghost btn-sm" title="Run the project's typecheck">Typecheck</button>
+              <button id="btn-export" class="btn btn-ghost btn-sm" title="Download the project as a .zip">Export</button>
+              <button id="btn-restart" class="btn btn-ghost btn-sm" title="Restart dev server">Restart</button>
+              <button id="btn-stop" class="btn btn-ghost btn-sm" title="Stop dev server">Stop</button>
+              <a id="btn-open" class="btn btn-ghost btn-sm" target="_blank" rel="noreferrer">Open ↗</a>
+            </div>
+          </header>
+
+          <!-- preview -->
+          <div class="view" id="view-preview">
+            <div class="preview-toolbar">
+              <div class="device-widths">
+                <button class="chip" data-width="375">Mobile</button>
+                <button class="chip" data-width="768">Tablet</button>
+                <button class="chip active" data-width="0">Full</button>
+              </div>
+              <div class="preview-url mono" id="preview-url"></div>
+              <button id="btn-reload" class="btn btn-ghost btn-sm">Reload</button>
+            </div>
+            <div class="preview-stage" id="preview-stage">
+              <iframe id="preview-frame" title="App preview" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"></iframe>
+              <div class="preview-overlay" id="preview-overlay">
+                <div class="preview-overlay-inner">
+                  <div class="spinner"></div>
+                  <p id="preview-overlay-text">Starting dev server…</p>
+                </div>
+              </div>
+            </div>
+            <div class="console-strip" id="console-strip" hidden>
+              <button class="console-toggle" id="console-toggle">
+                Console <span id="console-count" class="badge">0</span>
+              </button>
+              <div class="console-body" id="console-body"></div>
+            </div>
+          </div>
+
+          <!-- code -->
+          <div class="view" id="view-code" hidden>
+            <div class="code-layout">
+              <div class="file-tree-pane">
+                <div class="pane-label">Files <button id="btn-refresh-tree" class="btn btn-ghost btn-xs">↻</button></div>
+                <div class="tree-search">
+                  <input id="code-search" type="text" placeholder="Search in files… (Enter)" autocomplete="off" />
+                </div>
+                <div id="search-results" class="search-results" hidden></div>
+                <div id="file-tree" class="file-tree"></div>
+              </div>
+              <div class="editor-pane">
+                <div class="editor-bar">
+                  <span id="editor-path" class="mono muted">no file selected</span>
+                  <span class="spacer"></span>
+                  <span id="editor-dirty" class="dirty" hidden>unsaved</span>
+                  <button id="btn-save" class="btn btn-primary btn-sm" disabled>Save</button>
+                </div>
+                <textarea id="editor" class="editor mono" spellcheck="false" wrap="off" disabled></textarea>
+              </div>
+            </div>
+          </div>
+
+          <!-- history -->
+          <div class="view" id="view-history" hidden>
+            <div class="history-layout">
+              <div class="commit-pane">
+                <div class="pane-label">Commits</div>
+                <div id="commit-list" class="commit-list"></div>
+              </div>
+              <div class="diff-pane">
+                <div class="pane-label">
+                  <span id="diff-label">Working tree changes</span>
+                  <span class="spacer"></span>
+                  <button id="btn-restore" class="btn btn-ghost btn-xs" disabled title="Restore the working tree to the selected commit">Restore commit</button>
+                  <button id="btn-diff-worktree" class="btn btn-ghost btn-xs">Working tree</button>
+                </div>
+                <pre id="diff-view" class="diff mono"></pre>
+              </div>
+            </div>
+          </div>
+
+          <!-- logs -->
+          <div class="view" id="view-logs" hidden>
+            <div class="pane-label">
+              Dev server output
+              <span class="spacer"></span>
+              <button id="btn-clear-logs" class="btn btn-ghost btn-xs">Clear view</button>
+            </div>
+            <pre id="log-view" class="log-view mono"></pre>
+          </div>
+        </section>
+      </main>
+
+      <!-- ============================== chat ============================== -->
+      <aside id="chat">
+        <header class="chat-header">
+          <div class="mode-switch" role="tablist" aria-label="Agent mode">
+            <button class="mode-btn" data-mode="plan" role="tab">Plan</button>
+            <button class="mode-btn active" data-mode="agent" role="tab">Agent</button>
+          </div>
+          <div class="chat-header-actions">
+            <button id="btn-design" class="btn btn-ghost btn-sm design-trigger" title="Pick a design style">
+              <span>🎨</span><span class="dt-name">Design</span>
+            </button>
+            <button id="btn-abort" class="btn btn-danger btn-sm" hidden>Stop</button>
+            <button id="btn-clear-chat" class="btn btn-ghost btn-sm" title="Clear conversation">Clear</button>
+          </div>
+        </header>
+
+        <div id="mock-banner" class="mock-banner" hidden>
+          Mock provider active — responses are scripted, not model-generated.
+        </div>
+
+        <div id="chat-messages" class="chat-messages"></div>
+
+        <div id="review-bar" class="review-bar" hidden>
+          <div class="rb-text">
+            <strong>Changes awaiting review</strong>
+            <span id="review-files" class="muted small"></span>
+          </div>
+          <div class="rb-actions">
+            <button id="review-diff" class="btn btn-ghost btn-xs">View diff</button>
+            <button id="review-revert" class="btn btn-danger btn-xs">Revert</button>
+            <button id="review-approve" class="btn btn-primary btn-xs">Approve &amp; commit</button>
+          </div>
+        </div>
+
+        <form id="chat-form" class="chat-form">
+          <div id="chat-images" class="chat-images" hidden></div>
+          <textarea id="chat-input" rows="3" placeholder="Describe what to build or change…" disabled></textarea>
+          <div class="chat-form-bar">
+            <button type="button" id="btn-attach" class="btn btn-ghost btn-sm" title="Attach reference images" disabled>🖼</button>
+            <input type="file" id="chat-file" accept="image/*" multiple hidden />
+            <span id="chat-hint" class="muted small">Select a project to start</span>
+            <span class="spacer"></span>
+            <span id="usage-label" class="muted small mono"></span>
+            <button id="chat-send" class="btn btn-primary btn-sm" type="submit" disabled>Send</button>
+          </div>
+        </form>
+      </aside>
+    </div>
+
+    <!-- ============================= modals ============================== -->
+    <div id="modal-root" class="modal-root" hidden>
+      <div class="modal-backdrop" data-close></div>
+
+      <div class="modal" id="modal-new" hidden>
+        <h3>Create a project</h3>
+        <form id="modal-new-form">
+          <label class="field">
+            <span>Project name</span>
+            <input id="modal-new-name" type="text" placeholder="e.g. Recipe Box" autocomplete="off" maxlength="60" required />
+          </label>
+          <label class="field">
+            <span>Template</span>
+            <select id="modal-new-template"></select>
+          </label>
+          <p class="muted small">
+            A folder is created under <code class="mono">data/projects/</code> with a React + Vite +
+            Tailwind starter, its own git repo, and a reserved dev-server port.
+          </p>
+          <div class="modal-actions">
+            <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+            <button type="submit" class="btn btn-primary">Create</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="modal modal-wide" id="modal-settings" hidden>
+        <h3>Settings</h3>
+
+        <div class="field">
+          <span>Provider</span>
+          <div class="radio-row" id="settings-provider"></div>
+        </div>
+
+        <div id="settings-openai" class="provider-block">
+          <div class="field">
+            <span>Preset</span>
+            <select id="settings-preset"></select>
+          </div>
+          <label class="field">
+            <span>API key</span>
+            <input id="settings-openai-key" type="password" placeholder="sk-…" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>Base URL</span>
+            <input id="settings-openai-base" type="text" placeholder="https://api.openai.com/v1" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>Model</span>
+            <input id="settings-openai-model" type="text" placeholder="gpt-4o" autocomplete="off" />
+          </label>
+        </div>
+
+        <div id="settings-anthropic" class="provider-block" hidden>
+          <label class="field">
+            <span>API key</span>
+            <input id="settings-anthropic-key" type="password" placeholder="sk-ant-…" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>Base URL</span>
+            <input id="settings-anthropic-base" type="text" placeholder="https://api.anthropic.com" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>Model</span>
+            <input id="settings-anthropic-model" type="text" placeholder="claude-sonnet-4-5" autocomplete="off" />
+          </label>
+        </div>
+
+        <div class="field">
+          <span>Agent</span>
+          <div class="checkbox-row">
+            <label><input type="checkbox" id="settings-autoinstall" /> Auto-install when package.json changes</label>
+            <label><input type="checkbox" id="settings-autocommit" /> Auto-commit after each turn</label>
+            <label><input type="checkbox" id="settings-reviewcommit" /> Review changes before committing (approve or revert each turn)</label>
+          </div>
+        </div>
+        <label class="field">
+          <span>Max steps per turn <em id="settings-maxsteps-val" class="muted">24</em></span>
+          <input id="settings-maxsteps" type="range" min="4" max="60" step="2" />
+        </label>
+
+        <div id="settings-test-result" class="test-result" hidden></div>
+
+        <p class="muted small">
+          Keys are stored in <code class="mono">data/settings.json</code> on this machine only.
+          Environment variables <code class="mono">OPENAI_API_KEY</code>,
+          <code class="mono">OPENAI_BASE_URL</code>, <code class="mono">OPENAI_MODEL</code> are also
+          read and take effect when a field is left blank.
+        </p>
+
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-close>Close</button>
+          <button type="button" id="settings-test" class="btn btn-ghost">Test connection</button>
+          <button type="button" id="settings-save" class="btn btn-primary">Save</button>
+        </div>
+      </div>
+
+      <div class="modal" id="modal-confirm" hidden>
+        <h3 id="confirm-title">Are you sure?</h3>
+        <p class="muted" id="confirm-body"></p>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+          <button type="button" id="confirm-ok" class="btn btn-danger">Confirm</button>
+        </div>
+      </div>
+
+      <div class="modal modal-wide" id="modal-design" hidden>
+        <h3>Design style</h3>
+        <p class="muted small" style="margin:-10px 0 14px">
+          Pick a starting look for this project. It steers the agent's colors, typography and
+          component style — you can still ask for anything in chat afterwards.
+        </p>
+        <input id="design-search" class="design-search" type="text" placeholder="Search styles, moods, tags…" autocomplete="off" />
+        <div id="design-grid" class="design-grid"></div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" id="design-clear">No style</button>
+          <button type="button" class="btn btn-ghost" data-close>Close</button>
+        </div>
+      </div>
+
+      <div class="modal" id="modal-import" hidden>
+        <h3>Import an existing folder</h3>
+        <label class="field">
+          <span>Folder path</span>
+          <input id="modal-import-dir" type="text" placeholder="D:\path\to\my-app" autocomplete="off" />
+        </label>
+        <label class="field">
+          <span>Project name (optional)</span>
+          <input id="modal-import-name" type="text" autocomplete="off" maxlength="60" />
+        </label>
+        <p class="muted small">
+          The folder is adopted in place — nothing is copied. A git repo is initialised if missing so
+          history and rollback work. The preview only starts if the folder is a Vite project.
+        </p>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+          <button type="button" id="modal-import-ok" class="btn btn-primary">Import</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast-root" class="toast-root"></div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
