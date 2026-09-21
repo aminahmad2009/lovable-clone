@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Lovable Local</title>
+    <title>Lovable Local · CodeWoxy</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -14,7 +14,7 @@
           <span class="brand-mark">♥</span>
           <div class="brand-text">
             <strong>Lovable Local</strong>
-            <small>single-user · on-device</small>
+            <small>by CodeWoxy · single-user · on-device</small>
           </div>
         </div>
 
@@ -33,6 +33,7 @@
             <span class="dot"></span><span id="provider-pill-text">no provider</span>
           </div>
           <div class="footer-actions">
+            <button id="open-about" class="btn btn-ghost btn-sm version-chip" title="About this build">v—</button>
             <button id="open-settings" class="btn btn-ghost btn-sm">Settings</button>
             <button id="theme-toggle" class="btn btn-ghost btn-sm icon-btn" title="Toggle theme" aria-label="Toggle theme">☾</button>
           </div>
@@ -182,6 +183,9 @@
             <button id="btn-design" class="btn btn-ghost btn-sm design-trigger" title="Pick a design style">
               <span>🎨</span><span class="dt-name">Design</span>
             </button>
+            <button id="btn-skills" class="btn btn-ghost btn-sm design-trigger" title="Enable skills for this project">
+              <span>🧩</span><span class="dt-name">Skills</span>
+            </button>
             <button id="btn-abort" class="btn btn-danger btn-sm" hidden>Stop</button>
             <button id="btn-clear-chat" class="btn btn-ghost btn-sm" title="Clear conversation">Clear</button>
           </div>
@@ -288,9 +292,39 @@
           </label>
         </div>
 
+        <div id="settings-image" class="provider-block image-block">
+          <div class="field">
+            <span>Image model <em id="settings-image-state" class="muted"></em></span>
+            <p class="muted small" style="margin:2px 0 8px">
+              Optional. Any OpenAI-compatible endpoint that serves
+              <code class="mono">POST /images/generations</code>. Leave the base URL and key blank to
+              reuse the OpenAI-compatible text endpoint above. When nothing is configured the agent
+              falls back to the text endpoint and reports the failure in chat.
+            </p>
+          </div>
+          <label class="field">
+            <span>Image API key</span>
+            <input id="settings-image-key" type="password" placeholder="blank = reuse the text provider key" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>Image base URL</span>
+            <input id="settings-image-base" type="text" placeholder="blank = reuse the text provider base URL" autocomplete="off" />
+          </label>
+          <div class="skill-edit-row">
+            <label class="field" style="flex:2">
+              <span>Image model name</span>
+              <input id="settings-image-model" type="text" placeholder="e.g. gpt-image-1, flux-1-schnell" autocomplete="off" />
+            </label>
+            <label class="field" style="flex:1">
+              <span>Default size</span>
+              <select id="settings-image-size"></select>
+            </label>
+          </div>
+          <div id="settings-image-result" class="test-result" hidden></div>
+        </div>
+
         <div class="field">
-          <span>Agent</span>
-          <div class="checkbox-row">
+          <span>Agent</span>          <div class="checkbox-row">
             <label><input type="checkbox" id="settings-autoinstall" /> Auto-install when package.json changes</label>
             <label><input type="checkbox" id="settings-autocommit" /> Auto-commit after each turn</label>
             <label><input type="checkbox" id="settings-reviewcommit" /> Review changes before committing (approve or revert each turn)</label>
@@ -306,12 +340,14 @@
         <p class="muted small">
           Keys are stored in <code class="mono">data/settings.json</code> on this machine only.
           Environment variables <code class="mono">OPENAI_API_KEY</code>,
-          <code class="mono">OPENAI_BASE_URL</code>, <code class="mono">OPENAI_MODEL</code> are also
-          read and take effect when a field is left blank.
+          <code class="mono">OPENAI_BASE_URL</code>, <code class="mono">OPENAI_MODEL</code>,
+          <code class="mono">IMAGE_API_KEY</code>, <code class="mono">IMAGE_BASE_URL</code>,
+          <code class="mono">IMAGE_MODEL</code> are also read and take effect when a field is left blank.
         </p>
 
         <div class="modal-actions">
           <button type="button" class="btn btn-ghost" data-close>Close</button>
+          <button type="button" id="settings-test-image" class="btn btn-ghost" title="Generate a tiny test image">Test image model</button>
           <button type="button" id="settings-test" class="btn btn-ghost">Test connection</button>
           <button type="button" id="settings-save" class="btn btn-primary">Save</button>
         </div>
@@ -340,6 +376,59 @@
         </div>
       </div>
 
+      <div class="modal modal-wide" id="modal-skills" hidden>
+        <h3>Skills</h3>
+        <p class="muted small" style="margin:-10px 0 14px">
+          Enable skills to give the agent focused, reusable instructions for this project. Toggle a
+          built-in skill or add your own — every enabled skill is injected into the system prompt on
+          each turn.
+        </p>
+        <div class="skills-toolbar">
+          <input id="skill-search" class="design-search" type="text" placeholder="Search skills, tags…" autocomplete="off" />
+          <button type="button" id="btn-add-skill" class="btn btn-primary btn-sm">+ Add skill</button>
+        </div>
+        <div id="skill-list" class="design-grid skill-list"></div>
+        <div class="modal-actions">
+          <span id="skills-enabled-count" class="muted small"></span>
+          <span class="spacer"></span>
+          <button type="button" class="btn btn-ghost" data-close>Close</button>
+        </div>
+      </div>
+
+      <div class="modal modal-wide" id="modal-skill-edit" hidden>
+        <h3 id="skill-edit-title">Add skill</h3>
+        <form id="skill-edit-form">
+          <div class="skill-edit-row">
+            <label class="field field-icon">
+              <span>Icon</span>
+              <input id="skill-icon" type="text" maxlength="8" placeholder="🧩" autocomplete="off" />
+            </label>
+            <label class="field" style="flex:1">
+              <span>Name</span>
+              <input id="skill-name" type="text" placeholder="e.g. Brand voice" autocomplete="off" maxlength="60" required />
+            </label>
+          </div>
+          <label class="field">
+            <span>Description</span>
+            <input id="skill-description" type="text" placeholder="One line shown in the picker" autocomplete="off" maxlength="160" />
+          </label>
+          <label class="field">
+            <span>Tags <em class="muted">(comma-separated)</em></span>
+            <input id="skill-tags" type="text" placeholder="style, copy, brand" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>Instructions <em class="muted">(injected into the system prompt)</em></span>
+            <textarea id="skill-brief" class="skill-brief" rows="7" placeholder="Tell the agent exactly what to do when this skill is enabled…" required></textarea>
+          </label>
+          <div class="modal-actions">
+            <button type="button" class="btn btn-danger" id="skill-delete" hidden>Delete</button>
+            <span class="spacer"></span>
+            <button type="button" class="btn btn-ghost" id="skill-edit-cancel">Cancel</button>
+            <button type="submit" class="btn btn-primary">Save skill</button>
+          </div>
+        </form>
+      </div>
+
       <div class="modal" id="modal-import" hidden>
         <h3>Import an existing folder</h3>
         <label class="field">
@@ -357,6 +446,19 @@
         <div class="modal-actions">
           <button type="button" class="btn btn-ghost" data-close>Cancel</button>
           <button type="button" id="modal-import-ok" class="btn btn-primary">Import</button>
+        </div>
+      </div>
+      <div class="modal" id="modal-about" hidden>
+        <h3 id="about-product">Lovable Local</h3>
+        <p class="muted small" style="margin:-8px 0 14px">
+          Built by <strong id="about-company">CodeWoxy</strong>. A single-user, on-device
+          prompt-to-app builder: real files on disk, real dev servers, real git history.
+        </p>
+        <dl id="about-list" class="about-list"></dl>
+        <div class="modal-actions">
+          <a id="about-repo" class="btn btn-ghost" target="_blank" rel="noreferrer" hidden>Repository ↗</a>
+          <span class="spacer"></span>
+          <button type="button" class="btn btn-ghost" data-close>Close</button>
         </div>
       </div>
     </div>

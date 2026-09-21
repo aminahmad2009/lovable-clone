@@ -8,8 +8,12 @@ const state = {
   activeId: null,
   settings: null,
   providers: null,
+  health: null,
   designs: [],
   designFilter: '',
+  skills: [],
+  skillFilter: '',
+  editingSkillId: null,
   templates: [],
   pendingImages: [],
   searchTimer: null,
@@ -27,6 +31,9 @@ const state = {
   toolNodes: new Map(),
   currentAssistantEl: null,
   currentAssistantText: '',
+  currentThinkingEl: null,
+  currentThinkingText: '',
+  thinkingStartedAt: 0,
   reconnectTimer: null,
 }
 
@@ -132,19 +139,24 @@ function toggleTheme() {
 
 async function boot() {
   try {
-    const [health, settings, providers, designs, templates] = await Promise.all([
+    const [health, settings, providers, designs, skills, templates] = await Promise.all([
       api('/api/health'),
       api('/api/settings'),
       api('/api/providers'),
       api('/api/designs').catch(() => ({ designs: [] })),
+      api('/api/skills').catch(() => ({ skills: [] })),
       api('/api/templates').catch(() => ({ templates: [] })),
     ])
     state.settings = settings
     state.providers = providers
+    state.health = health
     state.designs = designs.designs || []
+    state.skills = skills.skills || []
     state.templates = templates.templates || []
     renderTemplateChoices()
     renderProviderPill(health)
+    renderVersionChip(health)
+    renderImageSizeChoices()
     await refreshProjects()
     renderSettingsProviderChoices()
     $('#mock-banner').hidden = settings.provider !== 'mock'
@@ -273,8 +285,55 @@ function renderProviderPill(health) {
   pill.innerHTML = ''
   pill.append(
     el('span', { class: `dot ${ready ? 'ok' : 'bad'}` }),
-    el('span', { id: 'provider-pill-text', text: `${health?.provider || 'none'} · ${ready ? 'ready' : 'no key'}` }),
+    el('span', {
+      id: 'provider-pill-text',
+      text: `${health?.provider || 'none'} · ${ready ? 'ready' : 'no key'}${health?.imageReady ? ' · 🖼' : ''}`,
+    }),
   )
+  pill.title = health?.imageReady
+    ? `Model provider: ${health.provider}\nImage model: ${health.imageModel}`
+    : `Model provider: ${health?.provider || 'none'}\nNo image model configured`
+}
+
+/** Sidebar version chip — click it for the full build identity. */
+function renderVersionChip(health) {
+  const chip = $('#open-about')
+  if (!chip) return
+  chip.textContent = `v${health?.version || '?'}`
+  chip.title = `${health?.product || 'Lovable Local'} · ${health?.company || 'CodeWoxy'}\nClick for build details`
+}
+
+function openAbout() {
+  const health = state.health || {}
+  $('#about-product').textContent = `${health.product || 'Lovable Local'} v${health.version || '?'}`
+  $('#about-company').textContent = health.company || 'CodeWoxy'
+
+  const rows = [
+    ['Product ID', health.productId || '—'],
+    ['Version', health.version || '—'],
+    ['Built by', health.company || '—'],
+    ['Text provider', `${health.provider || '—'} · ${health.providerReady ? 'ready' : 'no key'}`],
+    ['Image model', health.imageReady ? health.imageModel : 'not configured'],
+    ['Projects', `${health.projects ?? '—'} (${health.running ?? 0} dev servers running)`],
+    ['App directory', health.root || '—'],
+    ['Data directory', health.dataDir || '—'],
+  ]
+
+  const list = $('#about-list')
+  list.replaceChildren()
+  for (const [label, value] of rows) {
+    list.append(el('dt', { text: label }), el('dd', { class: 'mono', text: String(value) }))
+  }
+
+  const repo = $('#about-repo')
+  if (health.repository) {
+    repo.href = health.repository
+    repo.hidden = false
+  } else {
+    repo.hidden = true
+  }
+
+  openModal('modal-about')
 }
 
 /* ------------------------------- workspace ------------------------------ */
@@ -367,6 +426,7 @@ function renderTopbar() {
   $('#preview-url').textContent = project.previewUrl || ''
 
   updateDesignTrigger()
+  updateSkillsTrigger()
 }
 
 /* -------------------------------- design -------------------------------- */
@@ -446,6 +506,191 @@ async function selectDesign(designId) {
   } catch (err) {
     toast(err.message, 'error')
   }
+}
+
+/* -------------------------------- skills -------------------------------- */
+
+function projectSkillIds() {
+  return activeProject()?.skillIds || []
+}
+
+/** Enabled ids that still resolve to a known skill — mirrors how the server
+ *  ignores unknown ids when building the prompt, so the count stays honest
+ *  even if a user skill was deleted out from under a project. */
+function enabledSkillIds() {
+  const known = new Set(state.skills.map((s) => s.id))
+  return projectSkillIds().filter((id) => known.has(id))
+}
+
+function updateSkillsTrigger() {
+  const btn = $('#btn-skills')
+  if (!btn) return
+  const count = enabledSkillIds().length
+  btn.querySelector('.dt-name').textContent = count ? `Skills · ${count}` : 'Skills'
+  btn.classList.toggle('has-design', count > 0)
+  btn.title = count
+    ? `${count} skill${count === 1 ? '' : 's'} enabled — click to change`
+    : 'Enable skills for this project'
+}
+
+function renderSkillList() {
+  const list = $('#skill-list')
+  if (!list) return
+  const q = state.skillFilter.trim().toLowerCase()
+  const enabled = new Set(projectSkillIds())
+  const matches = state.skills.filter((s) => !q
+    || [s.name, s.description, ...(s.tags || [])].join(' ').toLowerCase().includes(q))
+
+  list.replaceChildren()
+  if (!matches.length) {
+    list.append(el('div', { class: 'design-empty' }, 'No skills match that search.'))
+    updateSkillsCount()
+    return
+  }
+
+  for (const skill of matches) {
+    const on = enabled.has(skill.id)
+    const card = el('div', { class: `skill-card ${on ? 'on' : ''}` },
+      el('button', {
+        type: 'button',
+        class: 'skill-main',
+        title: on ? 'Disable this skill' : 'Enable this skill',
+        onclick: () => toggleSkill(skill.id),
+      },
+        el('span', { class: 'skill-check', text: on ? '✓' : '' }),
+        el('span', { class: 'skill-icon', text: skill.icon || '🧩' }),
+        el('span', { class: 'skill-text' },
+          el('span', { class: 'dc-name' },
+            skill.name,
+            skill.builtin ? el('span', { class: 'skill-badge' }, 'built-in') : null,
+          ),
+          el('span', { class: 'dc-desc', text: skill.description || '' }),
+          el('span', { class: 'dc-tags' },
+            ...(skill.tags || []).map((t) => el('span', { class: 'dc-tag', text: t })),
+          ),
+        ),
+      ),
+      skill.builtin ? null : el('div', { class: 'skill-edit-actions' },
+        el('button', {
+          type: 'button', class: 'btn btn-ghost btn-xs', title: 'Edit skill',
+          onclick: () => openSkillEditor(skill),
+        }, 'Edit'),
+        el('button', {
+          type: 'button', class: 'btn btn-danger btn-xs', title: 'Delete skill',
+          onclick: () => confirmDeleteSkill(skill),
+        }, '×'),
+      ),
+    )
+    list.append(card)
+  }
+  updateSkillsCount()
+}
+
+function updateSkillsCount() {
+  const label = $('#skills-enabled-count')
+  if (!label) return
+  const count = enabledSkillIds().length
+  label.textContent = count
+    ? `${count} enabled for this project`
+    : 'No skills enabled for this project'
+}
+
+function openSkills() {
+  if (!activeProject()) { toast('Select a project first'); return }
+  state.skillFilter = ''
+  const search = $('#skill-search')
+  if (search) search.value = ''
+  renderSkillList()
+  openModal('modal-skills')
+  setTimeout(() => search?.focus(), 40)
+}
+
+async function toggleSkill(skillId) {
+  const project = activeProject()
+  if (!project) return
+  const current = new Set(project.skillIds || [])
+  if (current.has(skillId)) current.delete(skillId)
+  else current.add(skillId)
+  const next = [...current]
+  try {
+    const updated = await api(`/api/projects/${project.id}/skills`, {
+      method: 'PUT',
+      body: { skillIds: next },
+    })
+    project.skillIds = updated.skillIds || []
+    renderSkillList()
+    updateSkillsTrigger()
+  } catch (err) {
+    toast(err.message, 'error')
+  }
+}
+
+function openSkillEditor(skill = null) {
+  state.editingSkillId = skill?.id || null
+  $('#skill-edit-title').textContent = skill ? 'Edit skill' : 'Add skill'
+  $('#skill-icon').value = skill?.icon || ''
+  $('#skill-name').value = skill?.name || ''
+  $('#skill-description').value = skill?.description || ''
+  $('#skill-tags').value = (skill?.tags || []).join(', ')
+  $('#skill-brief').value = skill?.brief || ''
+  $('#skill-delete').hidden = !skill || skill.builtin
+  openModal('modal-skill-edit')
+  setTimeout(() => $('#skill-name').focus(), 40)
+}
+
+async function saveSkillFromEditor(event) {
+  event.preventDefault()
+  const body = {
+    icon: $('#skill-icon').value.trim() || '🧩',
+    name: $('#skill-name').value.trim(),
+    description: $('#skill-description').value.trim(),
+    tags: $('#skill-tags').value,
+    brief: $('#skill-brief').value.trim(),
+  }
+  if (!body.name) { toast('Give the skill a name', 'error'); return }
+  if (!body.brief) { toast('Write the instructions the agent should follow', 'error'); return }
+  try {
+    const saved = state.editingSkillId
+      ? await api(`/api/skills/${state.editingSkillId}`, { method: 'PUT', body })
+      : await api('/api/skills', { method: 'POST', body })
+    const index = state.skills.findIndex((s) => s.id === saved.id)
+    if (index === -1) state.skills.push({ ...saved })
+    else state.skills[index] = { ...state.skills[index], ...saved }
+    toast(state.editingSkillId ? 'Skill updated' : 'Skill added', 'ok')
+    state.editingSkillId = null
+    openModal('modal-skills')
+    renderSkillList()
+  } catch (err) {
+    toast(err.message, 'error')
+  }
+}
+
+function confirmDeleteSkill(skill) {
+  openConfirm(
+    `Delete "${skill.name}"?`,
+    'This removes the skill from your library. Projects that had it enabled will simply stop using it.',
+    async () => {
+      try {
+        await api(`/api/skills/${skill.id}`, { method: 'DELETE' })
+        state.skills = state.skills.filter((s) => s.id !== skill.id)
+        // Drop it from the active project so the count stays honest.
+        const project = activeProject()
+        if (project?.skillIds?.includes(skill.id)) {
+          const next = project.skillIds.filter((id) => id !== skill.id)
+          const updated = await api(`/api/projects/${project.id}/skills`, {
+            method: 'PUT', body: { skillIds: next },
+          })
+          project.skillIds = updated.skillIds || []
+          updateSkillsTrigger()
+        }
+        toast(`Deleted ${skill.name}`, 'ok')
+        openModal('modal-skills')
+        renderSkillList()
+      } catch (err) {
+        toast(err.message, 'error')
+      }
+    },
+  )
 }
 
 /* ------------------------------- templates ------------------------------ */
@@ -1047,17 +1292,27 @@ function handleEvent(data) {
       setAgentRunning(true)
       state.currentAssistantEl = null
       state.currentAssistantText = ''
+      state.currentThinkingEl = null
+      state.currentThinkingText = ''
+      state.thinkingStartedAt = 0
+      break
+
+    case 'assistant:thinking':
+      appendThinkingDelta(data.delta)
       break
 
     case 'assistant:delta':
+      finalizeThinking()
       appendAssistantDelta(data.delta)
       break
 
     case 'assistant:text':
+      finalizeThinking()
       finalizeAssistant()
       break
 
     case 'tool:start':
+      finalizeThinking()
       addToolEvent(data.id, data.name, 'running')
       break
 
@@ -1079,6 +1334,10 @@ function handleEvent(data) {
 
     case 'agent:retry':
       addChatMessage('system', `Provider said "${data.message}" — retrying in ${Math.round(data.delayMs / 1000)}s (attempt ${data.attempt + 1}).`)
+      break
+
+    case 'system:notice':
+      addChatMessage('system', data.message || '')
       break
 
     case 'git:commit':
@@ -1110,6 +1369,7 @@ function handleEvent(data) {
 
     case 'turn:end':
       setAgentRunning(false)
+      finalizeThinking()
       finalizeAssistant()
       if (data.usage?.inputTokens || data.usage?.outputTokens) {
         $('#usage-label').textContent = `${data.steps} steps · ${data.usage.inputTokens}↑ ${data.usage.outputTokens}↓`
@@ -1119,13 +1379,18 @@ function handleEvent(data) {
 
     case 'turn:error':
       setAgentRunning(false)
+      finalizeThinking()
       finalizeAssistant()
       addChatMessage('error', `${data.message}${data.hint ? `\n\n${data.hint}` : ''}`)
+      refreshWorkspace()
       break
 
     case 'turn:aborted':
       setAgentRunning(false)
+      finalizeThinking()
+      finalizeAssistant()
       addChatMessage('system', 'Turn stopped.')
+      refreshWorkspace()
       break
 
     case 'turn:maxsteps':
@@ -1181,6 +1446,68 @@ function finalizeAssistant() {
   }
   state.currentAssistantEl = null
   state.currentAssistantText = ''
+}
+
+/**
+ * Reasoning capture. The model streams `assistant:thinking` deltas; they land
+ * in one collapsed "Thinking…" block per step. The block is finalized (label
+ * switched to "Thought for Ns") as soon as real output — text, a tool call, or
+ * the end of the turn — arrives, so thinking always sits above what it led to.
+ */
+function appendThinkingDelta(delta) {
+  if (!delta) return
+  if (!state.currentThinkingEl) {
+    state.thinkingStartedAt = Date.now()
+    state.currentThinkingText = ''
+    state.currentThinkingEl = renderThinkingBlock('', true)
+    $('#chat-messages').append(state.currentThinkingEl)
+  }
+  state.currentThinkingText += delta
+  state.currentThinkingEl.querySelector('.thinking-body').textContent = state.currentThinkingText
+  scrollChat()
+}
+
+function finalizeThinking() {
+  const node = state.currentThinkingEl
+  if (!node) return
+  const text = state.currentThinkingText
+  if (!text.trim()) {
+    node.remove()
+  } else {
+    const secs = Math.max(1, Math.round((Date.now() - state.thinkingStartedAt) / 1000))
+    const label = node.querySelector('.thinking-label')
+    if (label) label.textContent = `Thought for ${secs}s`
+    node.classList.remove('thinking-live')
+  }
+  state.currentThinkingEl = null
+  state.currentThinkingText = ''
+  state.thinkingStartedAt = 0
+}
+
+/**
+ * Build a collapsed reasoning block. `live` shows the animated "Thinking…"
+ * affordance while deltas are still arriving; a persisted block is static and
+ * always starts collapsed with a plain "Thinking" label.
+ */
+function renderThinkingBlock(text, live = false) {
+  const body = el('div', { class: 'thinking-body', text })
+  const label = el('span', { class: 'thinking-label', text: live ? 'Thinking…' : 'Thinking' })
+  const head = el('button', {
+    type: 'button',
+    class: 'thinking-head',
+    onclick: (event) => {
+      event.stopPropagation()
+      head.parentElement.classList.toggle('open')
+    },
+  },
+    el('span', { class: 'th-arrow', text: '▸' }),
+    label,
+    live ? el('span', { class: 'th-dots' }, el('i'), el('i'), el('i')) : null,
+  )
+  const block = el('div', { class: `msg thinking ${live ? 'thinking-live' : ''}` },
+    el('div', { class: 'thinking-card' }, head, body),
+  )
+  return block
 }
 
 function addToolEvent(id, name, status, result) {
@@ -1252,14 +1579,23 @@ async function loadChatHistory(project) {
     const box = $('#chat-messages')
     box.replaceChildren()
     for (const message of data.messages || []) {
-      const text = Array.isArray(message.content)
-        ? message.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n')
-        : String(message.content || '')
-      if (text.trim()) addChatMessage(message.role === 'user' ? 'user' : 'assistant', text)
+      if (Array.isArray(message.content)) {
+        for (const block of message.content) {
+          if (block.type === 'thinking' && block.thinking?.trim()) {
+            box.append(renderThinkingBlock(block.thinking, false))
+          } else if (block.type === 'text' && block.text?.trim()) {
+            addChatMessage(message.role === 'user' ? 'user' : 'assistant', block.text)
+          }
+        }
+      } else {
+        const text = String(message.content || '')
+        if (text.trim()) addChatMessage(message.role === 'user' ? 'user' : 'assistant', text)
+      }
     }
     if (!data.messages?.length) {
       addChatMessage('system', `New project. Describe the app you want — the agent edits the real files in ${project.slug}/ and the preview updates live.`)
     }
+    scrollChat()
   } catch (err) {
     toast(err.message, 'error')
   }
@@ -1377,6 +1713,30 @@ function renderSettingsProviderChoices() {
   }
 }
 
+function renderImageSizeChoices() {
+  const select = $('#settings-image-size')
+  if (!select || select.options.length) return
+  const sizes = state.providers?.imageSizes || [{ id: '1024x1024', label: 'Square · 1024×1024' }]
+  select.replaceChildren()
+  for (const size of sizes) {
+    select.append(el('option', { value: size.id, text: size.label }))
+  }
+}
+
+/** One-line status under the "Image model" heading. */
+function renderImageState() {
+  const label = $('#settings-image-state')
+  if (!label) return
+  const image = state.providers?.image
+  if (image?.available) {
+    label.textContent = `· active: ${image.model} @ ${image.host} (${image.source})`
+    label.className = 'image-state ok'
+  } else {
+    label.textContent = '· not configured — the agent will fall back to the text endpoint'
+    label.className = 'image-state muted'
+  }
+}
+
 function openSettings() {
   const s = state.settings
   $('#settings-openai-key').value = ''
@@ -1388,6 +1748,16 @@ function openSettings() {
   $('#settings-anthropic-key').placeholder = s.anthropic.hasKey ? 'configured — leave blank to keep' : 'sk-ant-…'
   $('#settings-anthropic-base').value = s.anthropic.baseUrl
   $('#settings-anthropic-model').value = s.anthropic.model
+
+  const image = s.image || {}
+  renderImageSizeChoices()
+  $('#settings-image-key').value = ''
+  $('#settings-image-key').placeholder = image.hasKey ? 'configured — leave blank to keep' : 'blank = reuse the text provider key'
+  $('#settings-image-base').value = image.baseUrl || ''
+  $('#settings-image-model').value = image.model || ''
+  $('#settings-image-size').value = image.size || '1024x1024'
+  $('#settings-image-result').hidden = true
+  renderImageState()
 
   $('#settings-autoinstall').checked = s.agent.autoInstall !== false
   $('#settings-autocommit').checked = s.agent.autoCommit !== false
@@ -1424,6 +1794,7 @@ async function saveSettings() {
 
   const openaiKey = $('#settings-openai-key').value.trim()
   const anthropicKey = $('#settings-anthropic-key').value.trim()
+  const imageKey = $('#settings-image-key').value.trim()
 
   patch.openai = {
     baseUrl: $('#settings-openai-base').value.trim() || 'https://api.openai.com/v1',
@@ -1437,11 +1808,22 @@ async function saveSettings() {
   }
   if (anthropicKey) patch.anthropic.apiKey = anthropicKey
 
+  patch.image = {
+    baseUrl: $('#settings-image-base').value.trim(),
+    model: $('#settings-image-model').value.trim(),
+    size: $('#settings-image-size').value || '1024x1024',
+  }
+  if (imageKey) patch.image.apiKey = imageKey
+
   try {
     state.settings = await api('/api/settings', { method: 'PUT', body: patch })
     $('#mock-banner').hidden = chosen !== 'mock'
     const health = await api('/api/health')
+    state.health = health
+    state.providers = await api('/api/providers').catch(() => state.providers)
     renderProviderPill(health)
+    renderVersionChip(health)
+    renderImageState()
     toast('Settings saved', 'ok')
     closeModal()
   } catch (err) {
@@ -1481,6 +1863,7 @@ async function saveSettingsSilently(chosen) {
   const patch = { provider: chosen }
   const openaiKey = $('#settings-openai-key').value.trim()
   const anthropicKey = $('#settings-anthropic-key').value.trim()
+  const imageKey = $('#settings-image-key').value.trim()
   patch.openai = {
     baseUrl: $('#settings-openai-base').value.trim(),
     model: $('#settings-openai-model').value.trim(),
@@ -1491,7 +1874,42 @@ async function saveSettingsSilently(chosen) {
     model: $('#settings-anthropic-model').value.trim(),
   }
   if (anthropicKey) patch.anthropic.apiKey = anthropicKey
+  patch.image = {
+    baseUrl: $('#settings-image-base').value.trim(),
+    model: $('#settings-image-model').value.trim(),
+    size: $('#settings-image-size').value || '1024x1024',
+  }
+  if (imageKey) patch.image.apiKey = imageKey
   state.settings = await api('/api/settings', { method: 'PUT', body: patch })
+  state.providers = await api('/api/providers').catch(() => state.providers)
+  renderImageState()
+}
+
+/** Generate a throwaway 256×256 image to prove the endpoint works. */
+async function testImageModel() {
+  const box = $('#settings-image-result')
+  const chosen = syncProviderVisibility()
+  box.hidden = false
+  box.className = 'test-result'
+  box.textContent = 'Generating a test image…'
+
+  try {
+    await saveSettingsSilently(chosen)
+  } catch { /* test with whatever is stored */ }
+
+  try {
+    const result = await api('/api/settings/test-image', { method: 'POST', body: {} })
+    if (result.ok) {
+      box.className = 'test-result ok'
+      box.textContent = `Image endpoint OK in ${result.latencyMs}ms\nmodel: ${result.model} (${result.source})\nreturned ${result.bytes} bytes of ${result.format}`
+    } else {
+      box.className = 'test-result bad'
+      box.textContent = `Image generation failed\n${result.error}${result.hint ? `\n\n${result.hint}` : ''}`
+    }
+  } catch (err) {
+    box.className = 'test-result bad'
+    box.textContent = err.message
+  }
 }
 
 /* ------------------------------ global wiring --------------------------- */
@@ -1539,8 +1957,33 @@ function wireGlobalEvents() {
   })
   $('#design-clear').addEventListener('click', () => selectDesign(null))
 
+  $('#btn-skills').addEventListener('click', openSkills)
+  $('#skill-search').addEventListener('input', (event) => {
+    state.skillFilter = event.target.value
+    renderSkillList()
+  })
+  $('#btn-add-skill').addEventListener('click', () => openSkillEditor())
+  $('#skill-edit-form').addEventListener('submit', saveSkillFromEditor)
+  $('#skill-edit-cancel').addEventListener('click', () => {
+    state.editingSkillId = null
+    openModal('modal-skills')
+  })
+  $('#skill-delete').addEventListener('click', () => {
+    const skill = state.skills.find((s) => s.id === state.editingSkillId)
+    if (skill) confirmDeleteSkill(skill)
+  })
+
   $('#settings-save').addEventListener('click', saveSettings)
   $('#settings-test').addEventListener('click', testConnection)
+  $('#settings-test-image').addEventListener('click', testImageModel)
+  $('#open-about').addEventListener('click', async () => {
+    // Refresh so the About panel reflects the running build, not a stale boot.
+    try {
+      state.health = await api('/api/health')
+      renderVersionChip(state.health)
+    } catch { /* show what we have */ }
+    openAbout()
+  })
   $('#settings-maxsteps').addEventListener('input', (e) => {
     $('#settings-maxsteps-val').textContent = e.target.value
   })

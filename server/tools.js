@@ -2,6 +2,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { readFile, writeFile, mkdir, rm, readdir, stat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
+import { generateImage } from './llm/image.js'
 
 const IS_WINDOWS = process.platform === 'win32'
 const MAX_READ_BYTES = 400_000
@@ -177,8 +178,57 @@ async function searchFiles(root, args) {
   return hits.length ? hits.join('\n') : `No matches for /${args.pattern}/`
 }
 
-function runCommand(root, args, onLog) {
-  if (!args.command || typeof args.command !== 'string') {
+const IMAGE_DIR = 'public/generated'
+const IMAGE_EXT = /\.(png|jpe?g|webp|gif)$/i
+
+function slugify(text) {
+  return String(text)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40) || 'image'
+}
+
+/**
+ * Generate an image with the configured OpenAI-compatible image model and
+ * save it inside the project. Files land in `public/generated/` by default so
+ * Vite serves them from the site root (`/generated/name.png`).
+ */
+async function imageGenerationTool(root, args, ctx = {}) {
+  const prompt = String(args.prompt || '').trim()
+  if (!prompt) throw new Error('prompt is required')
+
+  const size = String(args.size || ctx.settings?.image?.size || '1024x1024')
+  const generated = await generateImage({
+    settings: ctx.settings || {},
+    provider: ctx.provider,
+    prompt,
+    size,
+    signal: ctx.signal,
+  })
+
+  let relative
+  if (args.path) {
+    relative = String(args.path).replace(/^\/+/, '')
+    if (!IMAGE_EXT.test(relative)) relative += `.${generated.ext}`
+  } else {
+    relative = `${IMAGE_DIR}/${slugify(prompt)}-${Date.now().toString(36)}.${generated.ext}`
+  }
+
+  const target = resolveInside(root, relative)
+  await mkdir(path.dirname(target), { recursive: true })
+  await writeFile(target, generated.buffer)
+
+  const urlPath = relative.startsWith('public/') ? `/${relative.slice('public/'.length)}` : `/${relative}`
+  const kb = Math.round(generated.buffer.length / 1024)
+  return [
+    `Saved ${size} image to ${relative} (${kb} KB, ${generated.ext.toUpperCase()})`,
+    `Model: ${generated.model} via ${generated.source}`,
+    `Reference it in code as "${urlPath}" — that path is served by the dev server.`,
+  ].join('\n')
+}
+
+function runCommand(root, args, onLog) {  if (!args.command || typeof args.command !== 'string') {
     return Promise.reject(new Error('command is required'))
   }
   const command = args.command.trim()
@@ -296,6 +346,19 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'image_generation',
+    description: 'Generate a raster image with the configured image model and save it into the project. Use this for real artwork — hero images, illustrations, product shots, textures, avatars — instead of SVG placeholders. Returns the path to reference in code.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'Detailed visual description: subject, style, lighting, colors, aspect.' },
+        path: { type: 'string', description: 'Optional destination relative to the project root, e.g. "public/generated/hero.png". Defaults to a generated name under public/generated/.' },
+        size: { type: 'string', description: 'Optional pixel size, e.g. "1024x1024", "1536x1024", "1024x1536". Defaults to the configured size.' },
+      },
+      required: ['prompt'],
+    },
+  },
+  {
     name: 'run_command',
     description: 'Run an allowlisted shell command in the project root (npm install, npm run build, npx tsc, git status, …). Use it to install dependencies and to verify the build compiles.',
     input_schema: {
@@ -313,16 +376,18 @@ const HANDLERS = {
   edit_file: editFileTool,
   delete_file: deleteFileTool,
   search_files: searchFiles,
+  image_generation: imageGenerationTool,
 }
 
 /** Execute one tool call. Never throws — failures come back as text for the model. */
-export async function executeTool(name, args, { root, onLog } = {}) {
+export async function executeTool(name, args, ctx = {}) {
+  const { root, onLog } = ctx
   try {
     if (name === 'run_command') return await runCommand(root, args || {}, onLog)
     const handler = HANDLERS[name]
     if (!handler) return `Unknown tool: ${name}`
-    return await handler(root, args || {})
+    return await handler(root, args || {}, ctx)
   } catch (err) {
-    return `ERROR: ${err.message}`
+    return `ERROR: ${err.message}${err.hint ? `\nHint: ${err.hint}` : ''}`
   }
 }

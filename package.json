@@ -1,15 +1,72 @@
 {
   "name": "lovable-local",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Single-user, local clone of a prompt-to-app builder: multi-project registry, agent with file tools, per-project Vite dev servers, live preview, git history.",
-  "main": "server/index.js",
+  "description": "Single-user, local clone of a prompt-to-app builder: multi-project registry, agent with file tools, image generation, per-project Vite dev servers, live preview, git history.",
+  "author": "CodeWoxy",
+  "company": "CodeWoxy",
+  "productName": "Lovable Local",
+  "productId": "codewoxy-lovable-local",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aminahmad2009/lovable-clone.git"
+  },
+  "homepage": "https://github.com/aminahmad2009/lovable-clone#readme",
+  "bugs": "https://github.com/aminahmad2009/lovable-clone/issues",
+  "main": "electron/main.js",
   "scripts": {
     "start": "node server/index.js",
-    "dev": "node --watch server/index.js"
+    "dev": "node --watch server/index.js",
+    "desktop": "electron .",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "version:check": "node -e \"const p=require('./package.json');const c=require('fs').readFileSync('CHANGELOG.md','utf8');if(!c.includes('## ['+p.version+']')){console.error('CHANGELOG.md is missing an entry for '+p.version);process.exit(1)}console.log('version '+p.version+' present in CHANGELOG.md')\""
   },
   "engines": {
     "node": ">=20.10"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.codewoxy.lovable-local",
+    "productName": "Lovable Local",
+    "copyright": "Copyright © 2026 CodeWoxy",
+    "artifactName": "${productName}-Setup-${version}.${ext}",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "asar": false,
+    "files": [
+      "server/**/*",
+      "web/**/*",
+      "electron/**/*",
+      "build/icon.png",
+      "package.json",
+      "README.md",
+      "CHANGELOG.md",
+      "docs/**/*"
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ],
+      "icon": "build/icon.png",
+      "signtoolOptions": {
+        "publisherName": "CodeWoxy"
+      }
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Lovable Local"
+    }
   }
 }

@@ -45,12 +45,17 @@ export async function testConnection(settings, provider) {
       latencyMs: Date.now() - started,
     }
   } catch (err) {
+    // The only abort source here is the 30 s deadline below, so an abort means
+    // "the endpoint never answered", not "the user pressed Stop".
+    const timedOut = err?.name === 'AbortError' || err?.name === 'TimeoutError'
     return {
       ok: false,
       provider,
-      error: err.message,
+      error: timedOut ? 'The endpoint did not respond within 30 seconds.' : err.message,
       status: err.status ?? null,
-      hint: err.hint ?? null,
+      hint: timedOut
+        ? 'Check the base URL in Settings, and whether a proxy or firewall is blocking the request.'
+        : (err.hint ?? null),
       latencyMs: Date.now() - started,
     }
   }

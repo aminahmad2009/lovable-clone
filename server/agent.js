@@ -1,11 +1,14 @@
 import path from 'node:path'
 import { TOOL_DEFINITIONS, executeTool } from './tools.js'
 import { streamChat } from './llm/index.js'
+import { TRANSIENT_CODES } from './llm/sse.js'
+import { imageCapability } from './llm/image.js'
 import { manager, emit } from './devserver.js'
 import { loadHistory, appendHistory, touchProject, addProjectUsage } from './registry.js'
 import { gitCommitAll, gitStatusShort } from './git.js'
 import { listProjectTree } from './files.js'
 import { designBrief } from './designs.js'
+import { skillsBrief } from './skills.js'
 
 const HISTORY_TURNS = 24
 
@@ -13,14 +16,22 @@ const HISTORY_TURNS = 24
 const RETRYABLE = /overloaded|rate limit|too many requests|temporarily unavailable|service unavailable|connection (?:reset|error)|ECONNRESET/i
 const RETRY_DELAYS = [6000, 15000]
 
+/** How many times an empty model response is retried before we report it. */
+const EMPTY_RESPONSE_RETRIES = 2
+const EMPTY_RESPONSE_DELAY = 900
+
 async function streamWithRetry(options, projectId) {
   let attempt = 0
   for (;;) {
     try {
       return await streamChat(options)
     } catch (err) {
+      // Transport failures arrive already translated, so match on the code as
+      // well as the wording — "the connection dropped mid-request" is retryable
+      // even though it no longer contains the string "ECONNRESET".
       const retryable = err.status === 429
         || (err.status >= 500 && err.status < 600)
+        || TRANSIENT_CODES.has(err.code || '')
         || RETRYABLE.test(err.message || '')
       if (!retryable || attempt >= RETRY_DELAYS.length || options.signal?.aborted) throw err
       const delay = RETRY_DELAYS[attempt]
@@ -28,6 +39,16 @@ async function streamWithRetry(options, projectId) {
       emit(projectId, 'agent:retry', { attempt, delayMs: delay, message: err.message })
       await new Promise((resolve) => setTimeout(resolve, delay))
     }
+  }
+}
+
+/** History writes must never mask the real error, and must never throw. */
+async function safeAppendHistory(projectId, persisted) {
+  try {
+    await appendHistory(projectId, persisted)
+    return null
+  } catch (err) {
+    return err
   }
 }
 
@@ -49,7 +70,40 @@ function frameworkNotes(template) {
   }
 }
 
-function systemPrompt(project, tree, mode) {
+/**
+ * Tell the model what image capability exists right now. The wording matters:
+ * with a model configured it should reach for `image_generation` instead of
+ * drawing SVG placeholders; without one it must still try, and then report the
+ * failure plainly rather than stopping silently.
+ */
+function imageBrief(settings, provider) {
+  const cap = imageCapability(settings, provider)
+  if (cap.available) {
+    const fallback = cap.fallbacks.length
+      ? ` If that endpoint fails, the platform automatically retries with ${cap.fallbacks.join(', ')}.`
+      : ''
+    return `
+## Image generation
+An OpenAI-compatible image model is configured: \`${cap.model}\` on ${cap.host}.${fallback}
+When the app needs real imagery — hero art, illustrations, product shots, textures, avatars,
+empty-state art — call \`image_generation\` with a detailed visual prompt instead of hand-drawing
+SVG placeholders or leaving empty gradient boxes. Generated files are saved under
+\`public/generated/\` and referenced from code as \`/generated/<file>\`.
+If the call fails, the tool returns the exact error: report it to the user, then continue with a
+non-image implementation so the app still works. Never end the turn without saying what happened.
+`
+  }
+  return `
+## Image generation
+No dedicated image model is configured, so \`image_generation\` falls back to the active
+OpenAI-compatible text endpoint — which usually has no image route and will fail. Prefer CSS,
+inline SVG or typed placeholders for imagery. If the user explicitly asks for generated images,
+call \`image_generation\` once; when it fails, quote the error and tell them to add a model in
+Settings → Image model. Never stop without saying what went wrong.
+`
+}
+
+function systemPrompt(project, tree, mode, skillsText = '', imageText = '') {
   const fw = frameworkNotes(project.template)
   const stack = `
 ## Project
@@ -76,7 +130,8 @@ ${fw.conventions}
 - Do NOT run \`git commit\`. The platform commits automatically after each turn.
 - You may run \`npx tsc --noEmit\` to typecheck when a change is intricate.
 - The app is rendered inside an iframe in a preview panel, so avoid anything that requires top-level navigation.
-${designBrief(project.designId)}
+- Always end your turn with a short text reply. If something failed, say what failed and why — an empty reply is treated as an error.
+${designBrief(project.designId)}${skillsText}${imageText}
 ## Current file tree
 ${tree}
 `
@@ -117,9 +172,41 @@ function trimHistory(messages) {
   return kept
 }
 
+/** Turn a blank model response into something a human can act on. */
+function emptyResponseError(result, providerName) {
+  const stop = result?.stopReason || 'none'
+  const model = result?.model || providerName || 'the model'
+  if (result?.thinking) {
+    return {
+      message: `${model} streamed reasoning only — no answer text and no tool calls (stop reason: ${stop}).`,
+      hint: 'The reply was cut off before the content stage. Send the message again, ask for a smaller change, or switch model in Settings.',
+    }
+  }
+  if (stop === 'length' || stop === 'max_tokens') {
+    return {
+      message: `${model} hit its output token limit before producing any content (stop reason: ${stop}).`,
+      hint: 'Ask for a smaller change, or use a model with a larger max output token budget.',
+    }
+  }
+  if (stop === 'content_filter') {
+    return {
+      message: `${model} returned an empty response because the provider filtered it (stop reason: content_filter).`,
+      hint: 'Rephrase the request.',
+    }
+  }
+  return {
+    message: `${model} returned an empty response — no text and no tool calls (stop reason: ${stop}).`,
+    hint: 'Retry the message. If it repeats, check the model name and base URL in Settings.',
+  }
+}
+
 /**
  * Run one agent turn: stream the model, execute its tool calls, feed build
  * errors back in, and keep going until the model stops or the step cap hits.
+ *
+ * Contract: this always emits exactly one terminal event — `turn:end` on
+ * success, `turn:error` on failure, `turn:aborted` when the user stops it — so
+ * the UI can never be left waiting on a turn that produced nothing.
  */
 export async function runAgentTurn({
   project,
@@ -130,190 +217,274 @@ export async function runAgentTurn({
   signal,
   images = [],
 }) {
-  const tree = await listProjectTree(project.path)
-  const history = await loadHistory(project.id)
-
-  const userContent = [
-    ...(images.length
-      ? images.map((img) => ({
-        type: 'image',
-        source: { type: 'base64', media_type: img.mediaType || 'image/png', data: img.data },
-      }))
-      : []),
-    { type: 'text', text: userMessage },
-  ]
-
-  const messages = [
-    ...trimHistory(history),
-    { role: 'user', content: userContent },
-  ]
-
   const persisted = [{ role: 'user', content: [{ type: 'text', text: userMessage }] }]
 
-  emit(project.id, 'turn:start', { mode, model: settings[provider || settings.provider]?.model })
+  const terminal = { done: false }
+  const fail = (message, extra = {}) => {
+    if (terminal.done) return false
+    terminal.done = true
+    emit(project.id, 'turn:error', {
+      message: String(message || 'The agent stopped without producing a response.'),
+      ...extra,
+    })
+    return true
+  }
+  const finish = (payload) => {
+    if (terminal.done) return false
+    terminal.done = true
+    emit(project.id, 'turn:end', payload)
+    return true
+  }
 
   let steps = 0
-  const maxSteps = settings.agent?.maxSteps ?? 24
-  const changedFiles = new Set()
   let totalInput = 0
   let totalOutput = 0
   let finalText = ''
-  let buildErrorReported = false
+  let aborted = false
 
-  while (steps < maxSteps) {
-    if (signal?.aborted) {
-      emit(project.id, 'turn:aborted', {})
-      break
-    }
-    steps++
+  try {
+    const tree = await listProjectTree(project.path)
+    const history = await loadHistory(project.id)
+    const skillsText = await skillsBrief(project.skillIds)
+    const activeProvider = provider || settings.provider
+    const imageText = mode === 'agent' ? imageBrief(settings, activeProvider) : ''
+    const system = systemPrompt(project, tree, mode, skillsText, imageText)
 
-    let result
-    try {
-      result = await streamWithRetry({
+    const userContent = [
+      ...(images.length
+        ? images.map((img) => ({
+          type: 'image',
+          source: { type: 'base64', media_type: img.mediaType || 'image/png', data: img.data },
+        }))
+        : []),
+      { type: 'text', text: userMessage },
+    ]
+
+    const messages = [
+      ...trimHistory(history),
+      { role: 'user', content: userContent },
+    ]
+
+    emit(project.id, 'turn:start', { mode, model: settings[activeProvider]?.model })
+
+    const maxSteps = settings.agent?.maxSteps ?? 24
+    const changedFiles = new Set()
+    const toolContext = { root: project.path, settings, provider: activeProvider, signal }
+    let buildErrorReported = false
+    let emptyRetries = 0
+
+    while (steps < maxSteps) {
+      if (signal?.aborted) {
+        aborted = true
+        emit(project.id, 'turn:aborted', {})
+        break
+      }
+      steps++
+
+      const result = await streamWithRetry({
         settings,
         provider,
-        system: systemPrompt(project, tree, mode),
+        system,
         messages,
         tools: mode === 'agent' ? TOOL_DEFINITIONS : [],
         signal,
         onText: (delta) => emit(project.id, 'assistant:delta', { delta, step: steps }),
+        onThinking: (delta) => emit(project.id, 'assistant:thinking', { delta, step: steps }),
         onToolStart: (call) => emit(project.id, 'tool:start', { id: call.id, name: call.name, step: steps }),
       }, project.id)
-    } catch (err) {
-      emit(project.id, 'turn:error', { message: err.message, hint: err.hint })
-      persisted.push({ role: 'assistant', content: [{ type: 'text', text: `_(error: ${err.message})_` }] })
-      await appendHistory(project.id, persisted)
-      throw err
-    }
 
-    totalInput += result.usage?.inputTokens ?? 0
-    totalOutput += result.usage?.outputTokens ?? 0
-    finalText = result.text || finalText
+      totalInput += result.usage?.inputTokens ?? 0
+      totalOutput += result.usage?.outputTokens ?? 0
+      finalText = result.text || finalText
 
-    if (result.text) {
-      messages.push({ role: 'assistant', content: [{ type: 'text', text: result.text }] })
-      persisted.push({ role: 'assistant', content: [{ type: 'text', text: result.text }] })
-      emit(project.id, 'assistant:text', { text: result.text, step: steps })
-    }
+      const hasText = Boolean(result.text && result.text.trim())
+      const hasTools = Boolean(result.toolCalls?.length)
 
-    if (mode !== 'agent' || !result.toolCalls?.length) {
-      // In plan mode, or when the model produced no tool calls, the turn is over.
-      break
-    }
+      // A response with neither text nor tool calls is the classic silent stop:
+      // the loop would break, the turn would "end", and the user would see
+      // nothing. Retry briefly, then report it as a proper error.
+      if (!hasText && !hasTools) {
+        if (emptyRetries < EMPTY_RESPONSE_RETRIES && !signal?.aborted) {
+          emptyRetries++
+          steps--
+          emit(project.id, 'system:notice', {
+            message: `Empty response from ${result.model || activeProvider} (stop reason: ${result.stopReason || 'none'}) — retrying.`,
+          })
+          await new Promise((resolve) => setTimeout(resolve, EMPTY_RESPONSE_DELAY))
+          continue
+        }
+        const problem = emptyResponseError(result, activeProvider)
+        persisted.push({ role: 'assistant', content: [{ type: 'text', text: `_(error: ${problem.message})_` }] })
+        await safeAppendHistory(project.id, persisted)
+        fail(problem.message, { hint: problem.hint, empty: true, stopReason: result.stopReason || null })
+        return { text: '', steps, usage: { inputTokens: totalInput, outputTokens: totalOutput }, commit: null, error: problem.message }
+      }
+      emptyRetries = 0
 
-    // Assistant turn must carry the tool_use blocks so results can attach.
-    if (result.text) messages.pop()
-    messages.push({
-      role: 'assistant',
-      content: [
-        ...(result.text ? [{ type: 'text', text: result.text }] : []),
-        ...result.toolCalls.map((c) => ({ type: 'tool_use', id: c.id, name: c.name, input: c.args })),
-      ],
-    })
-
-    const toolResults = []
-    for (const call of result.toolCalls) {
-      if (signal?.aborted) break
-
-      if (call.args?.__parseError) {
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: call.id,
-          content: 'ERROR: tool arguments were not valid JSON. Retry with well-formed arguments.',
-          is_error: true,
-        })
-        emit(project.id, 'tool:end', { id: call.id, name: call.name, ok: false, result: 'invalid JSON arguments' })
-        continue
+      // Persist reasoning (if any) alongside the answer so it can be re-shown
+      // collapsed on reload. It is never fed back to the model: both adapters
+      // drop unknown block types when rebuilding the request.
+      if (result.thinking || hasText) {
+        const blocks = []
+        if (result.thinking) blocks.push({ type: 'thinking', thinking: result.thinking })
+        if (hasText) blocks.push({ type: 'text', text: result.text })
+        persisted.push({ role: 'assistant', content: blocks })
       }
 
-      emit(project.id, 'tool:args', { id: call.id, name: call.name, args: redactArgs(call.name, call.args) })
+      if (hasText) {
+        messages.push({ role: 'assistant', content: [{ type: 'text', text: result.text }] })
+        emit(project.id, 'assistant:text', { text: result.text, step: steps })
+      }
 
-      const output = await executeTool(call.name, call.args, {
-        root: project.path,
-        onLog: (text) => emit(project.id, 'tool:log', { id: call.id, name: call.name, text }),
+      if (mode !== 'agent' || !hasTools) {
+        // In plan mode, or when the model produced no tool calls, the turn is over.
+        break
+      }
+
+      // Assistant turn must carry the tool_use blocks so results can attach.
+      if (hasText) messages.pop()
+      messages.push({
+        role: 'assistant',
+        content: [
+          ...(hasText ? [{ type: 'text', text: result.text }] : []),
+          ...result.toolCalls.map((c) => ({ type: 'tool_use', id: c.id, name: c.name, input: c.args })),
+        ],
       })
 
-      const ok = !output.startsWith('ERROR:') && !output.startsWith('Refused:')
-      if (isMutating(call.name) && ok) changedFiles.add(call.args?.path || call.name)
-      if (call.name === 'run_command' && /npm\s+(install|i|add)\b/.test(call.args?.command || '')) {
+      const toolResults = []
+      for (const call of result.toolCalls) {
+        if (signal?.aborted) break
+
+        if (call.args?.__parseError) {
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: call.id,
+            content: 'ERROR: tool arguments were not valid JSON. Retry with well-formed arguments.',
+            is_error: true,
+          })
+          emit(project.id, 'tool:end', { id: call.id, name: call.name, ok: false, result: 'invalid JSON arguments' })
+          continue
+        }
+
+        emit(project.id, 'tool:args', { id: call.id, name: call.name, args: redactArgs(call.name, call.args) })
+
+        const output = await executeTool(call.name, call.args, {
+          ...toolContext,
+          onLog: (text) => emit(project.id, 'tool:log', { id: call.id, name: call.name, text }),
+        })
+
+        const ok = !output.startsWith('ERROR:') && !output.startsWith('Refused:')
+        if (isMutating(call.name) && ok) changedFiles.add(call.args?.path || call.name)
+        if (call.name === 'image_generation' && ok) {
+          changedFiles.add(call.args?.path || path.join('public', 'generated'))
+          emit(project.id, 'file:written', { path: call.args?.path || 'public/generated', by: 'agent' })
+        }
+        if (call.name === 'run_command' && /npm\s+(install|i|add)\b/.test(call.args?.command || '')) {
+          emit(project.id, 'deps:changed', {})
+        }
+
+        toolResults.push({ type: 'tool_result', tool_use_id: call.id, content: output, is_error: !ok })
+        emit(project.id, 'tool:end', {
+          id: call.id,
+          name: call.name,
+          ok,
+          result: output.length > 1200 ? `${output.slice(0, 1200)}\n… truncated` : output,
+        })
+      }
+
+      messages.push({ role: 'user', content: toolResults })
+
+      // Self-healing: if the dev server broke because of these edits, hand the
+      // error straight back instead of waiting for the user to notice.
+      const devServer = manager.peek(project.id)
+      if (devServer?.status === 'error' && devServer.lastError && !buildErrorReported) {
+        buildErrorReported = true
+        messages.push({
+          role: 'user',
+          content: [{
+            type: 'text',
+            text: `The dev server reported a build error after your changes:\n\n${devServer.lastError.slice(0, 3000)}\n\nFix it now.`,
+          }],
+        })
+        emit(project.id, 'agent:selfheal', { error: devServer.lastError.slice(0, 500) })
+      }
+
+      // package.json edits need an install before the next import resolves.
+      if ([...changedFiles].some((f) => String(f).endsWith('package.json')) && settings.agent?.autoInstall !== false) {
+        const installOut = await executeTool('run_command', { command: 'npm install --no-audit --no-fund' }, toolContext)
+        messages.push({
+          role: 'user',
+          content: [{ type: 'text', text: `package.json changed, so dependencies were installed automatically.\n\n${installOut.slice(-1500)}` }],
+        })
+        changedFiles.clear()
         emit(project.id, 'deps:changed', {})
       }
-
-      toolResults.push({ type: 'tool_result', tool_use_id: call.id, content: output, is_error: !ok })
-      emit(project.id, 'tool:end', {
-        id: call.id,
-        name: call.name,
-        ok,
-        result: output.length > 1200 ? `${output.slice(0, 1200)}\n… truncated` : output,
-      })
     }
 
-    messages.push({ role: 'user', content: toolResults })
-
-    // Self-healing: if the dev server broke because of these edits, hand the
-    // error straight back instead of waiting for the user to notice.
-    const devServer = manager.peek(project.id)
-    if (devServer?.status === 'error' && devServer.lastError && !buildErrorReported) {
-      buildErrorReported = true
-      messages.push({
-        role: 'user',
-        content: [{
-          type: 'text',
-          text: `The dev server reported a build error after your changes:\n\n${devServer.lastError.slice(0, 3000)}\n\nFix it now.`,
-        }],
-      })
-      emit(project.id, 'agent:selfheal', { error: devServer.lastError.slice(0, 500) })
+    if (steps >= maxSteps) {
+      emit(project.id, 'turn:maxsteps', { maxSteps })
     }
 
-    // package.json edits need an install before the next import resolves.
-    if ([...changedFiles].some((f) => f.endsWith('package.json')) && settings.agent?.autoInstall !== false) {
-      const installOut = await executeTool('run_command', { command: 'npm install --no-audit --no-fund' }, { root: project.path })
-      messages.push({
-        role: 'user',
-        content: [{ type: 'text', text: `package.json changed, so dependencies were installed automatically.\n\n${installOut.slice(-1500)}` }],
-      })
-      changedFiles.clear()
-      emit(project.id, 'deps:changed', {})
-    }
-  }
+    const usage = { inputTokens: totalInput, outputTokens: totalOutput }
+    if (mode === 'agent') await addProjectUsage(project.id, usage)
 
-  if (steps >= maxSteps) {
-    emit(project.id, 'turn:maxsteps', { maxSteps })
-  }
-
-  const usage = { inputTokens: totalInput, outputTokens: totalOutput }
-  if (mode === 'agent') await addProjectUsage(project.id, usage)
-
-  let commit = null
-  const reviewMode = settings.agent?.reviewCommit === true
-  if (mode === 'agent' && reviewMode) {
-    // Hold the changes for a human decision instead of committing blindly.
-    const pending = await gitStatusShort(project.path)
-    if (pending.length) {
-      emit(project.id, 'review:pending', { files: pending.map((p) => p.file) })
-    }
-  } else if (mode === 'agent' && settings.agent?.autoCommit !== false) {
-    try {
+    let commit = null
+    const reviewMode = settings.agent?.reviewCommit === true
+    if (mode === 'agent' && reviewMode) {
+      // Hold the changes for a human decision instead of committing blindly.
       const pending = await gitStatusShort(project.path)
       if (pending.length) {
-        const message = commitMessage(userMessage, pending)
-        commit = await gitCommitAll(project.path, message)
-        emit(project.id, 'git:commit', { ...commit, files: pending.length })
+        emit(project.id, 'review:pending', { files: pending.map((p) => p.file) })
       }
-    } catch (err) {
-      emit(project.id, 'git:error', { message: err.message })
+    } else if (mode === 'agent' && settings.agent?.autoCommit !== false) {
+      try {
+        const pending = await gitStatusShort(project.path)
+        if (pending.length) {
+          const message = commitMessage(userMessage, pending)
+          commit = await gitCommitAll(project.path, message)
+          emit(project.id, 'git:commit', { ...commit, files: pending.length })
+        }
+      } catch (err) {
+        emit(project.id, 'git:error', { message: err.message })
+      }
     }
+
+    const historyError = await safeAppendHistory(project.id, persisted)
+    await touchProject(project.id)
+
+    if (historyError) {
+      // The work happened but could not be recorded — that is still a failure
+      // the user has to hear about, not a silent success.
+      fail(`The turn completed but the conversation could not be saved: ${historyError.message}`, {
+        hint: `Check that ${project.id ? 'the data directory' : 'data/meta'} is writable.`,
+      })
+      return { text: finalText, steps, usage, commit, error: historyError.message }
+    }
+
+    finish({ steps, usage, commit, aborted })
+    return { text: finalText, steps, usage, commit, aborted }
+  } catch (err) {
+    const aborted = signal?.aborted || err?.name === 'AbortError' || /aborted/i.test(err?.message || '')
+    if (aborted) {
+      persisted.push({ role: 'assistant', content: [{ type: 'text', text: '_(stopped by user)_' }] })
+      await safeAppendHistory(project.id, persisted)
+      emit(project.id, 'turn:aborted', {})
+      terminal.done = true
+      return {
+        text: finalText,
+        steps,
+        usage: { inputTokens: totalInput, outputTokens: totalOutput },
+        commit: null,
+        aborted: true,
+      }
+    }
+
+    persisted.push({ role: 'assistant', content: [{ type: 'text', text: `_(error: ${err.message})_` }] })
+    await safeAppendHistory(project.id, persisted)
+    fail(err.message, { hint: err.hint })
+    err.emitted = true
+    throw err
   }
-
-  await appendHistory(project.id, persisted)
-  await touchProject(project.id)
-  emit(project.id, 'turn:end', {
-    steps,
-    usage,
-    commit,
-  })
-
-  return { text: finalText, steps, usage, commit }
 }
 
 function isMutating(name) {

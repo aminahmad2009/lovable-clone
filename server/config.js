@@ -1,12 +1,30 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 /** Repository root of this tool (the folder holding server/ and web/). */
 export const ROOT_DIR = path.resolve(__dirname, '..')
+
+/* ------------------------------- identity ------------------------------- */
+/* One source of truth for "what build is this". package.json holds the
+ * version; everything else (health endpoint, About dialog, installer) reads
+ * these constants so they can never drift apart. */
+
+const pkg = JSON.parse(readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'))
+
+/** Semver of the running build, e.g. "0.2.0". */
+export const APP_VERSION = pkg.version
+
+/** Stable product identifier — the same string across builds, machines and
+ *  installs. Used as the desktop appId stem and shown in About / health. */
+export const PRODUCT_ID = pkg.productId || 'codewoxy-lovable-local'
+
+export const PRODUCT_NAME = pkg.build?.productName || 'Lovable Local'
+export const COMPANY = pkg.company || 'CodeWoxy'
+export const REPOSITORY = String(pkg.repository?.url || pkg.repository || '').replace(/^git\+/, '').replace(/\.git$/, '')
 
 export const WEB_DIR = path.join(ROOT_DIR, 'web')
 export const DATA_DIR = process.env.LOVABLE_DATA_DIR
@@ -39,6 +57,17 @@ export const DEFAULT_SETTINGS = {
     apiKey: '',
     baseUrl: 'https://api.openai.com/v1',
     model: 'gpt-4o',
+  },
+  /**
+   * Optional OpenAI-compatible image endpoint (`POST {baseUrl}/images/generations`).
+   * A blank baseUrl/apiKey means "reuse the OpenAI-compatible text endpoint",
+   * so a gateway that serves both only needs the model name here.
+   */
+  image: {
+    apiKey: '',
+    baseUrl: '',
+    model: '',
+    size: '1024x1024',
   },
   agent: {
     maxSteps: 24,
@@ -114,6 +143,13 @@ export async function loadSettings() {
   }
   if (process.env.OPENAI_MODEL) merged.openai.model = process.env.OPENAI_MODEL
 
+  // Image generation is optional; it inherits the OpenAI-compatible endpoint
+  // unless overridden, so IMAGE_MODEL alone is enough for most gateways.
+  if (process.env.IMAGE_API_KEY && !merged.image.apiKey) merged.image.apiKey = process.env.IMAGE_API_KEY
+  if (process.env.IMAGE_BASE_URL && !stored.image?.baseUrl) merged.image.baseUrl = process.env.IMAGE_BASE_URL
+  if (process.env.IMAGE_MODEL) merged.image.model = process.env.IMAGE_MODEL
+  if (process.env.IMAGE_SIZE) merged.image.size = process.env.IMAGE_SIZE
+
   return merged
 }
 
@@ -129,7 +165,9 @@ export async function saveSettings(patch) {
 export function keySource(settings, provider) {
   const envKeys = provider === 'anthropic'
     ? [process.env.ANTHROPIC_API_KEY, process.env.ANTHROPIC_AUTH_TOKEN]
-    : [process.env.OPENAI_API_KEY]
+    : provider === 'image'
+      ? [process.env.IMAGE_API_KEY]
+      : [process.env.OPENAI_API_KEY]
   const configured = settings?.[provider]?.apiKey
   if (!configured) return 'none'
   return envKeys.some((key) => key && key === configured) ? 'environment' : 'settings'
@@ -143,6 +181,16 @@ export const OPENAI_COMPATIBLE_PRESETS = [
   { id: 'together', label: 'Together AI', baseUrl: 'https://api.together.xyz/v1', model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo' },
   { id: 'azure', label: 'Azure OpenAI', baseUrl: 'https://YOUR-RESOURCE.openai.azure.com/openai/deployments/YOUR-DEPLOYMENT', model: 'gpt-4o' },
   { id: 'custom', label: 'Custom endpoint', baseUrl: '', model: '' },
+]
+
+/** Sizes offered in the Settings UI for the image model. */
+export const IMAGE_SIZE_PRESETS = [
+  { id: '1024x1024', label: 'Square · 1024×1024' },
+  { id: '1536x1024', label: 'Landscape · 1536×1024' },
+  { id: '1024x1536', label: 'Portrait · 1024×1536' },
+  { id: '1792x1024', label: 'Wide · 1792×1024' },
+  { id: '512x512', label: 'Small · 512×512' },
+  { id: '256x256', label: 'Tiny · 256×256 (cheap test)' },
 ]
 
 export { readJson, writeJsonAtomic, existsSync }

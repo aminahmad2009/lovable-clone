@@ -1,4 +1,4 @@
-import { streamSse, assertOk } from './sse.js'
+import { streamSse, assertOk, describeNetworkError } from './sse.js'
 
 const DEFAULT_MAX_TOKENS = 8000
 
@@ -19,6 +19,7 @@ export async function streamAnthropic({
   maxTokens = DEFAULT_MAX_TOKENS,
   signal,
   onText,
+  onThinking,
   onToolStart,
 }) {
   const apiKey = settings.anthropic?.apiKey
@@ -52,22 +53,29 @@ export async function streamAnthropic({
     }))
   }
 
-  const response = await fetch(`${baseUrl}/v1/messages`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-    signal,
-  })
+  const endpoint = `${baseUrl}/v1/messages`
+  let response
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    })
+  } catch (err) {
+    throw describeNetworkError(err, endpoint, 'Anthropic')
+  }
   await assertOk(response, 'Anthropic')
 
   const textParts = []
+  const thinkingParts = []
   const toolCalls = []
   /** Partial tool calls keyed by content block index. */
   const pending = new Map()
   let stopReason = null
   let usage = { inputTokens: 0, outputTokens: 0 }
 
-  for await (const evt of streamSse(response)) {
+  for await (const evt of streamSse(response, { url: endpoint, provider: 'Anthropic' })) {
     if (evt.done) break
     if (signal?.aborted) break
     const data = evt.data
@@ -96,6 +104,9 @@ export async function streamAnthropic({
       if (delta?.type === 'text_delta' && delta.text) {
         textParts.push(delta.text)
         onText?.(delta.text)
+      } else if (delta?.type === 'thinking_delta' && delta.thinking) {
+        thinkingParts.push(delta.thinking)
+        onThinking?.(delta.thinking)
       } else if (delta?.type === 'input_json_delta' && delta.partial_json) {
         const call = pending.get(data.index)
         if (call) call.json += delta.partial_json
@@ -118,6 +129,7 @@ export async function streamAnthropic({
     provider: 'anthropic',
     model: body.model,
     text: textParts.join(''),
+    thinking: thinkingParts.join(''),
     toolCalls: finalized,
     stopReason: stopReason || (finalized.length ? 'tool_use' : 'end_turn'),
     usage,

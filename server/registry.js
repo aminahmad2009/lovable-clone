@@ -57,6 +57,7 @@ function toPublic(project, runtime = {}) {
     port: project.port,
     template: project.template,
     designId: project.designId || null,
+    skillIds: project.skillIds || [],
     usage: project.usage || { inputTokens: 0, outputTokens: 0, turns: 0 },
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
@@ -159,6 +160,18 @@ export async function setProjectDesign(id, designId) {
   if (!project) throw new Error('Project not found')
   if (designId) project.designId = designId
   else delete project.designId
+  await writeRegistry(registry)
+  return project
+}
+
+/** Replace the list of enabled skill ids for a project. */
+export async function setProjectSkills(id, skillIds) {
+  const registry = await readRegistry()
+  const project = registry.projects.find((p) => p.id === id)
+  if (!project) throw new Error('Project not found')
+  const clean = [...new Set((Array.isArray(skillIds) ? skillIds : []).map(String).filter(Boolean))]
+  if (clean.length) project.skillIds = clean
+  else delete project.skillIds
   await writeRegistry(registry)
   return project
 }

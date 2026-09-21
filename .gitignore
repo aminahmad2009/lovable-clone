@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build output (installers are ~80 MB and reproducible from source)
+release/
+dist/
+
+# Runtime data: registry, settings (contains API keys), generated projects,
+# chat history, per-project git repos. Never commit this.
+data/
+
+# Logs and OS noise
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Environment files
+.env
+.env.local

@@ -21,7 +21,7 @@ function chunk(text, onText, size = 24) {
   }
 }
 
-export async function streamMock({ messages = [], onText, onToolStart, signal }) {
+export async function streamMock({ messages = [], onText, onThinking, onToolStart, signal }) {
   if (signal?.aborted) throw new Error('Aborted')
 
   const sawToolResult = messages.some(
@@ -31,6 +31,8 @@ export async function streamMock({ messages = [], onText, onToolStart, signal })
   await new Promise((resolve) => setTimeout(resolve, 120))
 
   if (!sawToolResult) {
+    const thinking = 'The user wants to verify the tool loop. I will create a single small probe component under src/components/, write it with write_file, then stop and summarise. No dependencies are needed.'
+    chunk(thinking, onThinking, 18)
     const text = 'This is the mock provider. It writes one probe file so the tool loop can be verified, then stops.'
     chunk(text, onText)
 
@@ -45,6 +47,7 @@ export async function streamMock({ messages = [], onText, onToolStart, signal })
       provider: 'mock',
       model: 'mock-scripted',
       text,
+      thinking,
       toolCalls: [call],
       stopReason: 'tool_calls',
       usage: { inputTokens: 0, outputTokens: 0 },
@@ -52,6 +55,8 @@ export async function streamMock({ messages = [], onText, onToolStart, signal })
     }
   }
 
+  const thinking = 'The probe file was written successfully. Nothing else is required, so I will confirm completion.'
+  chunk(thinking, onThinking, 18)
   const text = 'Mock turn complete: wrote src/components/AgentProbe.tsx. No real model was called.'
   chunk(text, onText)
 
@@ -59,6 +64,7 @@ export async function streamMock({ messages = [], onText, onToolStart, signal })
     provider: 'mock',
     model: 'mock-scripted',
     text,
+    thinking,
     toolCalls: [],
     stopReason: 'stop',
     usage: { inputTokens: 0, outputTokens: 0 },

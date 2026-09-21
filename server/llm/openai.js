@@ -1,4 +1,4 @@
-import { streamSse, assertOk } from './sse.js'
+import { streamSse, assertOk, describeNetworkError } from './sse.js'
 
 const DEFAULT_MAX_TOKENS = 8000
 
@@ -18,6 +18,7 @@ export async function streamOpenAi({
   maxTokens = DEFAULT_MAX_TOKENS,
   signal,
   onText,
+  onThinking,
   onToolStart,
 }) {
   const apiKey = settings.openai?.apiKey
@@ -45,24 +46,31 @@ export async function streamOpenAi({
     body.tool_choice = 'auto'
   }
 
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-    signal,
-  })
+  const endpoint = `${baseUrl}/chat/completions`
+  let response
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal,
+    })
+  } catch (err) {
+    throw describeNetworkError(err, endpoint, 'OpenAI-compatible')
+  }
   await assertOk(response, 'OpenAI-compatible')
 
   const textParts = []
+  const thinkingParts = []
   /** Tool calls keyed by the streaming index OpenAI assigns. */
   const pending = new Map()
   let stopReason = null
   let usage = { inputTokens: 0, outputTokens: 0 }
 
-  for await (const evt of streamSse(response)) {
+  for await (const evt of streamSse(response, { url: endpoint, provider: 'OpenAI-compatible' })) {
     if (evt.done) break
     if (signal?.aborted) break
     const data = evt.data
@@ -78,6 +86,14 @@ export async function streamOpenAi({
     const choice = data.choices?.[0]
     if (!choice) continue
     const delta = choice.delta || {}
+
+    // Reasoning models stream chain-of-thought separately from the answer.
+    // Different gateways name it differently; accept the common variants.
+    const reasoning = pickReasoning(delta)
+    if (reasoning) {
+      thinkingParts.push(reasoning)
+      onThinking?.(reasoning)
+    }
 
     if (typeof delta.content === 'string' && delta.content) {
       textParts.push(delta.content)
@@ -115,10 +131,23 @@ export async function streamOpenAi({
     provider: 'openai',
     model: body.model,
     text: textParts.join(''),
+    thinking: thinkingParts.join(''),
     toolCalls,
     stopReason: stopReason || (toolCalls.length ? 'tool_calls' : 'stop'),
     usage,
   }
+}
+
+/** Extract chain-of-thought text from a streaming delta, across gateway variants. */
+function pickReasoning(delta) {
+  if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) return delta.reasoning_content
+  if (typeof delta.reasoning === 'string' && delta.reasoning) return delta.reasoning
+  if (Array.isArray(delta.reasoning_details) && delta.reasoning_details.length) {
+    return delta.reasoning_details
+      .map((d) => (typeof d === 'string' ? d : d?.text || d?.summary || ''))
+      .join('')
+  }
+  return ''
 }
 
 function safeParse(json) {

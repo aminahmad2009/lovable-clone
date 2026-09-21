@@ -3,23 +3,28 @@ import path from 'node:path'
 import { readFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import {
-  ROOT_DIR, WEB_DIR, CONTROL_PORT, CONTROL_HOST,
-  ensureDataDirs, loadSettings, saveSettings, keySource, OPENAI_COMPATIBLE_PRESETS,
+  ROOT_DIR, WEB_DIR, DATA_DIR, CONTROL_PORT, CONTROL_HOST,
+  APP_VERSION, PRODUCT_ID, PRODUCT_NAME, COMPANY, REPOSITORY,
+  PROJECT_PORT_START, PROJECT_PORT_END, MAX_RUNNING_SERVERS,
+  ensureDataDirs, loadSettings, saveSettings, keySource,
+  OPENAI_COMPATIBLE_PRESETS, IMAGE_SIZE_PRESETS,
 } from './config.js'
 import {
   listProjects, getProject, createProject, renameProject, deleteProject,
   loadHistory, clearHistory, projectGitSummary, projectDiff, toPublic, findOrphanDirs,
-  setProjectDesign, addProjectUsage, importProject,
+  setProjectDesign, setProjectSkills, addProjectUsage, importProject,
 } from './registry.js'
 import { manager, bus, emit } from './devserver.js'
 import { runAgentTurn } from './agent.js'
 import { providerReady, testConnection } from './llm/index.js'
+import { imageCapability, testImageConnection } from './llm/image.js'
 import { MOCK_WARNING } from './llm/mock.js'
 import { getFileTree, readProjectFile, writeProjectFile, searchProjectFiles } from './files.js'
 import { gitShowDiff, gitRestore, gitDiscardWorking, gitCommitAll, gitStatusShort } from './git.js'
 import { executeTool } from './tools.js'
 import { zipDirectory } from './zip.js'
 import { designCatalog, getDesign } from './designs.js'
+import { skillCatalog, getSkill, createSkill, updateSkill, deleteSkill } from './skills.js'
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -142,6 +147,12 @@ function publicSettings(settings) {
       hasKey: Boolean(settings.openai.apiKey),
       keySource: keySource(settings, 'openai'),
     },
+    image: {
+      ...settings.image,
+      apiKey: settings.image.apiKey ? '•'.repeat(8) : '',
+      hasKey: Boolean(settings.image.apiKey),
+      keySource: keySource(settings, 'image'),
+    },
     agent: settings.agent,
   }
 }
@@ -180,14 +191,22 @@ function route(method, pattern, handler) {
 route('GET', '/api/health', async (_req, res) => {
   const settings = await loadSettings()
   const projects = await listProjects()
+  const image = imageCapability(settings, settings.provider)
   sendJson(res, 200, {
     ok: true,
-    version: '0.1.0',
+    version: APP_VERSION,
+    productId: PRODUCT_ID,
+    product: PRODUCT_NAME,
+    company: COMPANY,
+    repository: REPOSITORY || null,
     root: ROOT_DIR,
+    dataDir: DATA_DIR,
     projects: projects.length,
     running: manager.all().filter((s) => s.status === 'running').length,
     provider: settings.provider,
     providerReady: Boolean(settings[settings.provider]?.apiKey),
+    imageReady: image.available,
+    imageModel: image.model || null,
   })
 })
 
@@ -198,7 +217,7 @@ route('GET', '/api/settings', async (_req, res) => {
 route('PUT', '/api/settings', async (req, res) => {
   const patch = await readBody(req)
   // Never let a redacted placeholder overwrite a real key.
-  for (const provider of ['anthropic', 'openai']) {
+  for (const provider of ['anthropic', 'openai', 'image']) {
     if (patch[provider]?.apiKey?.includes('•')) delete patch[provider].apiKey
   }
   const next = await saveSettings(patch)
@@ -207,14 +226,23 @@ route('PUT', '/api/settings', async (req, res) => {
 
 route('GET', '/api/providers', async (_req, res) => {
   const settings = await loadSettings()
+  const image = imageCapability(settings, settings.provider)
   sendJson(res, 200, {
     presets: OPENAI_COMPATIBLE_PRESETS,
+    imageSizes: IMAGE_SIZE_PRESETS,
     providers: ['openai', 'anthropic', 'mock'],
     active: settings.provider,
     ready: {
       openai: providerReady(settings, 'openai'),
       anthropic: providerReady(settings, 'anthropic'),
       mock: true,
+    },
+    image: {
+      available: image.available,
+      model: image.model || null,
+      host: image.host || null,
+      source: image.source || null,
+      fallbacks: image.fallbacks || [],
     },
     mockWarning: MOCK_WARNING,
   })
@@ -230,8 +258,50 @@ route('POST', '/api/settings/test', async (req, res) => {
   sendJson(res, 200, await testConnection(settings, target))
 })
 
+/** Generates a tiny 256×256 image so a bad endpoint is caught in Settings. */
+route('POST', '/api/settings/test-image', async (req, res) => {
+  const settings = await loadSettings()
+  sendJson(res, 200, await testImageConnection(settings, settings.provider))
+})
+
 route('GET', '/api/designs', async (_req, res) => {
   sendJson(res, 200, { designs: designCatalog() })
+})
+
+/* skills */
+
+route('GET', '/api/skills', async (_req, res) => {
+  sendJson(res, 200, { skills: await skillCatalog() })
+})
+
+route('POST', '/api/skills', async (req, res) => {
+  const body = await readBody(req)
+  try {
+    const skill = await createSkill(body)
+    sendJson(res, 201, skill)
+  } catch (err) {
+    sendError(res, err.status || 500, err.message)
+  }
+})
+
+route('PUT', '/api/skills/:skillId', async (req, res, params) => {
+  const body = await readBody(req)
+  try {
+    const skill = await updateSkill(params.skillId, body)
+    sendJson(res, 200, skill)
+  } catch (err) {
+    sendError(res, err.status || 500, err.message)
+  }
+})
+
+route('DELETE', '/api/skills/:skillId', async (req, res, params) => {
+  try {
+    const deleted = await deleteSkill(params.skillId)
+    if (!deleted) return sendError(res, 404, 'No such user skill')
+    sendJson(res, 200, { deleted: params.skillId })
+  } catch (err) {
+    sendError(res, err.status || 500, err.message)
+  }
 })
 
 route('GET', '/api/templates', async (_req, res) => {
@@ -302,6 +372,16 @@ route('PUT', '/api/projects/:id/design', async (req, res, params) => {
   }
   const updated = await setProjectDesign(project.id, designId || null)
   emit(project.id, 'design:changed', { designId: updated.designId || null })
+  sendJson(res, 200, withRuntime(updated))
+})
+
+route('PUT', '/api/projects/:id/skills', async (req, res, params) => {
+  const project = await requireProject(res, params.id)
+  if (!project) return
+  const { skillIds } = await readBody(req)
+  if (!Array.isArray(skillIds)) return sendError(res, 400, 'skillIds must be an array')
+  const updated = await setProjectSkills(project.id, skillIds)
+  emit(project.id, 'skills:changed', { skillIds: updated.skillIds || [] })
   sendJson(res, 200, withRuntime(updated))
 })
 
@@ -544,6 +624,7 @@ route('POST', '/api/projects/:id/chat', async (req, res, params) => {
   if (mode === 'agent') {
     manager.get(project).start().catch((err) => {
       emit(project.id, 'log', { stream: 'system', line: `Could not start dev server: ${err.message}` })
+      emit(project.id, 'system:notice', { message: `Dev server did not start: ${err.message}` })
     })
   }
 
@@ -558,8 +639,12 @@ route('POST', '/api/projects/:id/chat', async (req, res, params) => {
       images: parsedImages,
     })
   } catch (err) {
-    // runAgentTurn already emitted turn:error to the client; log only here.
     console.error(`[agent] turn failed for ${project.slug}:`, err.message)
+    // runAgentTurn normally emits turn:error itself; this is the safety net so
+    // no failure path can ever leave the chat panel without an explanation.
+    if (!err.emitted) {
+      emit(project.id, 'turn:error', { message: err.message || 'The agent stopped unexpectedly.', hint: err.hint })
+    }
   } finally {
     activeTurns.delete(project.id)
   }
@@ -632,12 +717,15 @@ async function main() {
   await ensureDataDirs()
   server.listen(CONTROL_PORT, CONTROL_HOST, async () => {
     const settings = await loadSettings()
+    const image = imageCapability(settings, settings.provider)
     console.log('')
-    console.log('  Lovable Local')
+    console.log(`  ${PRODUCT_NAME} v${APP_VERSION} — built by ${COMPANY}`)
+    console.log(`  product id      ${PRODUCT_ID}`)
     console.log(`  control panel   http://${CONTROL_HOST}:${CONTROL_PORT}`)
-    console.log(`  data directory  ${path.join(ROOT_DIR, 'data')}`)
+    console.log(`  data directory  ${DATA_DIR}`)
     console.log(`  provider        ${settings.provider} (${settings[settings.provider]?.apiKey ? 'key configured' : 'NO KEY — open Settings'})`)
-    console.log(`  dev servers     ports 5180+, max ${manager.all().length} tracked`)
+    console.log(`  image model     ${image.available ? `${image.model} @ ${image.host}` : 'not configured (image_generation falls back to the text endpoint)'}`)
+    console.log(`  dev servers     ports ${PROJECT_PORT_START}-${PROJECT_PORT_END}, max ${MAX_RUNNING_SERVERS} concurrent, ${manager.all().length} tracked`)
     console.log('')
   })
 }
