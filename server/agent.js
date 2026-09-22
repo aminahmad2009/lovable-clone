@@ -1,10 +1,10 @@
 import path from 'node:path'
-import { TOOL_DEFINITIONS, executeTool } from './tools.js'
+import { executeTool, getToolDefinitions } from './tools.js'
 import { streamChat } from './llm/index.js'
 import { TRANSIENT_CODES } from './llm/sse.js'
 import { imageCapability } from './llm/image.js'
 import { manager, emit } from './devserver.js'
-import { loadHistory, appendHistory, touchProject, addProjectUsage } from './registry.js'
+import { loadHistory, appendHistory, touchProject, addProjectUsage, getProjectMCP } from './registry.js'
 import { gitCommitAll, gitStatusShort } from './git.js'
 import { listProjectTree } from './files.js'
 import { designBrief } from './designs.js'
@@ -103,7 +103,7 @@ Settings → Image model. Never stop without saying what went wrong.
 `
 }
 
-function systemPrompt(project, tree, mode, skillsText = '', imageText = '') {
+function systemPrompt(project, tree, mode, skillsText = '', imageText = '', customSystemPrompt = '', customAssistantPrompt = '') {
   const fw = frameworkNotes(project.template)
   const stack = `
 ## Project
@@ -131,10 +131,15 @@ ${fw.conventions}
 - You may run \`npx tsc --noEmit\` to typecheck when a change is intricate.
 - The app is rendered inside an iframe in a preview panel, so avoid anything that requires top-level navigation.
 - Always end your turn with a short text reply. If something failed, say what failed and why — an empty reply is treated as an error.
+- The user can send messages while you are working. A user message that arrives mid-turn is steering: it refines or overrides the plan you are executing. Adjust immediately, keep whatever work is still correct, and acknowledge the change in one clause — do not restart from scratch unless asked, and do not ignore it.
 ${designBrief(project.designId)}${skillsText}${imageText}
 ## Current file tree
 ${tree}
 `
+
+  if (customSystemPrompt && customSystemPrompt.trim()) {
+    stack += `\n## Custom System Instructions\n${customSystemPrompt.trim()}\n`
+  }
 
   if (mode === 'plan') {
     return `${stack}
@@ -144,7 +149,7 @@ Discuss approach, structure, data model and trade-offs. Be concrete and brief. W
 happy they will switch to Agent mode to have the work done.`
   }
 
-  return `${stack}
+  let agentMode = `${stack}
 ## Mode: AGENT
 You have tools to read and write this project directly. Use them to complete the request end to end.
 
@@ -158,6 +163,12 @@ Working method:
 If a tool returns an error, or the platform reports a build error, fix it and keep going rather
 than stopping to ask. Only ask the user a question when the request is genuinely ambiguous in a way
 that would change what you build.`
+
+  if (customAssistantPrompt && customAssistantPrompt.trim()) {
+    agentMode += `\n\n## Assistant Behavior\n${customAssistantPrompt.trim()}`
+  }
+
+  return agentMode
 }
 
 function trimHistory(messages) {
@@ -208,6 +219,19 @@ function emptyResponseError(result, providerName) {
  * success, `turn:error` on failure, `turn:aborted` when the user stops it — so
  * the UI can never be left waiting on a turn that produced nothing.
  */
+/** Anthropic-shaped content blocks for a user message: optional images, then text. */
+function userBlocks(text, images = []) {
+  return [
+    ...(Array.isArray(images) && images.length
+      ? images.map((img) => ({
+        type: 'image',
+        source: { type: 'base64', media_type: img.mediaType || 'image/png', data: img.data },
+      }))
+      : []),
+    { type: 'text', text: String(text || '') },
+  ]
+}
+
 export async function runAgentTurn({
   project,
   userMessage,
@@ -216,8 +240,39 @@ export async function runAgentTurn({
   provider,
   signal,
   images = [],
+  steering = null,
 }) {
   const persisted = [{ role: 'user', content: [{ type: 'text', text: userMessage }] }]
+
+  /* ------------------------------ steering ------------------------------ */
+  /* The user can type while the agent works. Those messages land in a shared
+   * inbox (owned by the HTTP route) and are injected at the only safe point in
+   * the loop: the top of an iteration, where `messages` ends with either the
+   * opening user turn or a tool_result block. Injecting anywhere else would
+   * split an assistant tool_use from its results and break both adapters. */
+
+  const takeSteering = () => {
+    if (!steering?.inbox?.length) return []
+    return steering.inbox.splice(0, steering.inbox.length)
+  }
+
+  let steered = 0
+
+  const injectSteering = (items) => {
+    for (const item of items) {
+      const content = userBlocks(item.text, item.images)
+      messages.push({ role: 'user', content })
+      persisted.push({ role: 'user', content })
+      steered++
+      emit(project.id, 'turn:steered', {
+        text: item.text,
+        images: item.images?.length || 0,
+        step: steps,
+        at: item.at || Date.now(),
+        queuedAt: item.queuedAt || null,
+      })
+    }
+  }
 
   const terminal = { done: false }
   const fail = (message, extra = {}) => {
@@ -248,17 +303,14 @@ export async function runAgentTurn({
     const skillsText = await skillsBrief(project.skillIds)
     const activeProvider = provider || settings.provider
     const imageText = mode === 'agent' ? imageBrief(settings, activeProvider) : ''
-    const system = systemPrompt(project, tree, mode, skillsText, imageText)
+    
+    // Get custom prompts from settings
+    const customSystemPrompt = settings.agent?.systemPrompt || ''
+    const customAssistantPrompt = settings.agent?.assistantPrompt || ''
+    
+    const system = systemPrompt(project, tree, mode, skillsText, imageText, customSystemPrompt, customAssistantPrompt)
 
-    const userContent = [
-      ...(images.length
-        ? images.map((img) => ({
-          type: 'image',
-          source: { type: 'base64', media_type: img.mediaType || 'image/png', data: img.data },
-        }))
-        : []),
-      { type: 'text', text: userMessage },
-    ]
+    const userContent = userBlocks(userMessage, images)
 
     const messages = [
       ...trimHistory(history),
@@ -269,9 +321,18 @@ export async function runAgentTurn({
 
     const maxSteps = settings.agent?.maxSteps ?? 24
     const changedFiles = new Set()
-    const toolContext = { root: project.path, settings, provider: activeProvider, signal }
+    
+    // Get project MCP servers
+    const mcpServers = await getProjectMCP(project.id)
+    
+    // Build tool definitions including MCP tools
+    const toolDefinitions = mode === 'agent' ? await getToolDefinitions(project.id, mcpServers) : []
+    
+    const toolContext = { root: project.path, settings, provider: activeProvider, signal, projectId: project.id, mcpServers }
     let buildErrorReported = false
     let emptyRetries = 0
+    /** Steering that arrived too late to inject; the caller turns it into a follow-up turn. */
+    const leftoverSteering = []
 
     while (steps < maxSteps) {
       if (signal?.aborted) {
@@ -279,6 +340,10 @@ export async function runAgentTurn({
         emit(project.id, 'turn:aborted', {})
         break
       }
+
+      const arrived = takeSteering()
+      if (arrived.length) injectSteering(arrived)
+
       steps++
 
       const result = await streamWithRetry({
@@ -286,7 +351,7 @@ export async function runAgentTurn({
         provider,
         system,
         messages,
-        tools: mode === 'agent' ? TOOL_DEFINITIONS : [],
+        tools: toolDefinitions,
         signal,
         onText: (delta) => emit(project.id, 'assistant:delta', { delta, step: steps }),
         onThinking: (delta) => emit(project.id, 'assistant:thinking', { delta, step: steps }),
@@ -337,7 +402,18 @@ export async function runAgentTurn({
       }
 
       if (mode !== 'agent' || !hasTools) {
-        // In plan mode, or when the model produced no tool calls, the turn is over.
+        // In plan mode, or when the model produced no tool calls, the turn is
+        // over — unless the user steered while it was answering. Agent mode
+        // keeps going in the same turn; anything else is handed back so the
+        // caller can run it as a follow-up instead of dropping it.
+        const late = takeSteering()
+        if (late.length) {
+          if (mode === 'agent' && steps < maxSteps && !signal?.aborted) {
+            injectSteering(late)
+            continue
+          }
+          leftoverSteering.push(...late)
+        }
         break
       }
 
@@ -421,6 +497,10 @@ export async function runAgentTurn({
       }
     }
 
+    // Anything that arrived after the last drain (during the commit step, say)
+    // is handed back rather than silently discarded.
+    leftoverSteering.push(...takeSteering())
+
     if (steps >= maxSteps) {
       emit(project.id, 'turn:maxsteps', { maxSteps })
     }
@@ -461,8 +541,8 @@ export async function runAgentTurn({
       return { text: finalText, steps, usage, commit, error: historyError.message }
     }
 
-    finish({ steps, usage, commit, aborted })
-    return { text: finalText, steps, usage, commit, aborted }
+    finish({ steps, usage, commit, aborted, steered })
+    return { text: finalText, steps, usage, commit, aborted, steered, leftoverSteering }
   } catch (err) {
     const aborted = signal?.aborted || err?.name === 'AbortError' || /aborted/i.test(err?.message || '')
     if (aborted) {

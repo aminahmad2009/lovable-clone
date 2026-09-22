@@ -1,0 +1,28 @@
+[
+  {
+    "id": "google-drive",
+    "name": "Google Drive",
+    "icon": "☁️",
+    "description": "Google Drive file operations - list, read, write, search files.",
+    "category": "Files & Storage",
+    "tags": [
+      "google-drive",
+      "files",
+      "storage",
+      "google"
+    ],
+    "transport": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@modelcontextprotocol/server-gdrive"
+    ],
+    "env": {
+      "GOOGLE_CLIENT_ID": "",
+      "GOOGLE_CLIENT_SECRET": "",
+      "GOOGLE_REFRESH_TOKEN": ""
+    },
+    "stars": 400,
+    "verified": true
+  }
+]

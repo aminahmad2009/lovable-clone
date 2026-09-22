@@ -29,12 +29,28 @@ const state = {
   selectedCommit: null,
   /** tool call id -> DOM element */
   toolNodes: new Map(),
+  /** steering queuedAt -> badge element, so delivery can be confirmed in place */
+  steerNodes: new Map(),
   currentAssistantEl: null,
   currentAssistantText: '',
   currentThinkingEl: null,
   currentThinkingText: '',
   thinkingStartedAt: 0,
   reconnectTimer: null,
+  // Skills factory
+  skillsFactorySkills: [],
+  skillsFactoryPage: 1,
+  skillsFactoryLoading: false,
+  skillsFactoryLoaded: false,
+  skillsFactorySearch: '',
+  // MCP factory
+  mcpFactoryServers: [],
+  mcpFactoryPage: 1,
+  mcpFactoryLoading: false,
+  mcpFactoryLoaded: false,
+  mcpFactorySearch: '',
+  mcpFactoryCategories: [],
+  mcpFactoryProjectServers: [],
 }
 
 /* -------------------------------- helpers ------------------------------- */
@@ -97,8 +113,22 @@ function activeProject() {
   return state.projects.find((p) => p.id === state.activeId) || null
 }
 
+/** 987 -> "987", 1234 -> "1.2K", 4500000 -> "4.5M". The exact count stays in a title attribute. */
 function formatTokens(n) {
-  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
+  const value = Number(n) || 0
+  const abs = Math.abs(value)
+  const compact = (divisor, suffix) => {
+    const scaled = value / divisor
+    return `${scaled.toFixed(scaled >= 100 ? 0 : 1).replace(/\.0$/, '')}${suffix}`
+  }
+  if (abs >= 1e9) return compact(1e9, 'B')
+  if (abs >= 1e6) return compact(1e6, 'M')
+  if (abs >= 1e3) return compact(1e3, 'K')
+  return String(value)
+}
+
+function exactTokens(n) {
+  return (Number(n) || 0).toLocaleString('en-US')
 }
 
 function timeAgo(ts) {
@@ -345,6 +375,7 @@ async function selectProject(id) {
   state.commits = []
   state.selectedFile = null
   state.toolNodes.clear()
+  state.steerNodes.clear()
 
   $('#home').hidden = true
   $('#workspace').hidden = false
@@ -357,9 +388,9 @@ async function selectProject(id) {
   $('#editor').disabled = true
   $('#editor-path').textContent = 'no file selected'
   $('#btn-save').disabled = true
-  $('#chat-input').disabled = false
-  $('#chat-send').disabled = false
-  $('#chat-hint').textContent = 'Enter to send · Shift+Enter for a new line'
+  // Composer state (including the Send/Steer label) is derived, not set by hand;
+  // refreshWorkspace corrects it if this project already has a turn running.
+  setAgentRunning(false)
   const attach = $('#btn-attach')
   if (attach) attach.disabled = false
   clearImages()
@@ -416,9 +447,13 @@ function renderTopbar() {
 
   const usage = project.usage || {}
   const total = (usage.inputTokens || 0) + (usage.outputTokens || 0)
-  $('#ws-usage').textContent = total
+  const usageEl = $('#ws-usage')
+  usageEl.textContent = total
     ? `${formatTokens(usage.inputTokens || 0)}↑ ${formatTokens(usage.outputTokens || 0)}↓ · ${usage.turns || 0} turns`
     : ''
+  usageEl.title = total
+    ? `${exactTokens(usage.inputTokens || 0)} in / ${exactTokens(usage.outputTokens || 0)} out = ${exactTokens(total)} tokens over ${usage.turns || 0} turns`
+    : 'Cumulative tokens for this project'
 
   const openBtn = $('#btn-open')
   openBtn.href = project.previewUrl || '#'
@@ -563,6 +598,7 @@ function renderSkillList() {
           el('span', { class: 'dc-name' },
             skill.name,
             skill.builtin ? el('span', { class: 'skill-badge' }, 'built-in') : null,
+            skill.external ? el('span', { class: 'skill-badge external' }, skill.external.source) : null,
           ),
           el('span', { class: 'dc-desc', text: skill.description || '' }),
           el('span', { class: 'dc-tags' },
@@ -933,8 +969,7 @@ async function refreshWorkspace(project) {
   if (status) {
     target.status = status.status
     target.lastError = status.lastError
-    state.agentRunning = Boolean(status.agentRunning)
-    $('#btn-abort').hidden = !state.agentRunning
+    setAgentRunning(Boolean(status.agentRunning))
     if (status.server?.logs?.length) {
       state.logs = status.server.logs
       renderLogs()
@@ -969,6 +1004,10 @@ function switchView(view) {
     }).catch(() => {})
   }
   if (view === 'logs') renderLogs()
+  if (view === 'mcp') {
+    const project = activeProject()
+    if (project) loadProjectMCPServers()
+  }
 }
 
 /* -------------------------------- preview ------------------------------- */
@@ -1340,6 +1379,28 @@ function handleEvent(data) {
       addChatMessage('system', data.message || '')
       break
 
+    case 'steer:queued': {
+      const node = addChatMessage('user', data.text || '')
+      node.classList.add('steering')
+      const badge = el('span', { class: 'steer-badge', text: 'steering…' })
+      node.querySelector('.msg-role').append(badge)
+      if (data.queuedAt) state.steerNodes.set(data.queuedAt, badge)
+      break
+    }
+
+    case 'turn:steered': {
+      const badge = data.queuedAt ? state.steerNodes.get(data.queuedAt) : null
+      if (badge) {
+        badge.textContent = `steered · step ${data.step}`
+        badge.classList.add('delivered')
+        state.steerNodes.delete(data.queuedAt)
+      } else {
+        // Another tab sent it, or the panel reloaded mid-turn.
+        addChatMessage('user', data.text || '')
+      }
+      break
+    }
+
     case 'git:commit':
       hideReviewBar()
       if (data.committed) toast(`Committed ${data.hash}`, 'ok')
@@ -1372,7 +1433,9 @@ function handleEvent(data) {
       finalizeThinking()
       finalizeAssistant()
       if (data.usage?.inputTokens || data.usage?.outputTokens) {
-        $('#usage-label').textContent = `${data.steps} steps · ${data.usage.inputTokens}↑ ${data.usage.outputTokens}↓`
+        const label = $('#usage-label')
+        label.textContent = `${data.steps} steps · ${formatTokens(data.usage.inputTokens)}↑ ${formatTokens(data.usage.outputTokens)}↓`
+        label.title = `${exactTokens(data.usage.inputTokens)} input / ${exactTokens(data.usage.outputTokens)} output tokens`
       }
       refreshWorkspace()
       break
@@ -1409,9 +1472,16 @@ function handleEvent(data) {
 function setAgentRunning(running) {
   state.agentRunning = running
   $('#btn-abort').hidden = !running
-  $('#chat-send').disabled = running
-  $('#chat-input').disabled = running
-  $('#chat-hint').textContent = running ? 'Agent is working…' : 'Enter to send · Shift+Enter for a new line'
+  // The composer deliberately stays live while the agent works: sending now
+  // steers the running turn instead of being refused with a 409.
+  const send = $('#chat-send')
+  send.disabled = !state.activeId
+  send.classList.toggle('steer', running)
+  send.textContent = running ? 'Steer' : 'Send'
+  $('#chat-input').disabled = !state.activeId
+  $('#chat-hint').textContent = running
+    ? 'Agent is working — send to steer it, Stop to abort'
+    : 'Enter to send · Shift+Enter for a new line'
 }
 
 /* ---------------------------------- chat -------------------------------- */
@@ -1461,15 +1531,37 @@ function appendThinkingDelta(delta) {
     state.currentThinkingText = ''
     state.currentThinkingEl = renderThinkingBlock('', true)
     $('#chat-messages').append(state.currentThinkingEl)
+    // Start timer update interval
+    state.thinkingTimerInterval = setInterval(updateThinkingTimer, 500)
   }
   state.currentThinkingText += delta
   state.currentThinkingEl.querySelector('.thinking-body').textContent = state.currentThinkingText
   scrollChat()
 }
 
+function updateThinkingTimer() {
+  if (!state.currentThinkingEl || !state.thinkingStartedAt) {
+    if (state.thinkingTimerInterval) {
+      clearInterval(state.thinkingTimerInterval)
+      state.thinkingTimerInterval = null
+    }
+    return
+  }
+  const timerEl = state.currentThinkingEl.querySelector('.thinking-timer')
+  if (timerEl) {
+    const secs = Math.round((Date.now() - state.thinkingStartedAt) / 1000)
+    timerEl.textContent = `${secs}s`
+  }
+}
+
 function finalizeThinking() {
   const node = state.currentThinkingEl
   if (!node) return
+  // Clear timer interval
+  if (state.thinkingTimerInterval) {
+    clearInterval(state.thinkingTimerInterval)
+    state.thinkingTimerInterval = null
+  }
   const text = state.currentThinkingText
   if (!text.trim()) {
     node.remove()
@@ -1477,6 +1569,8 @@ function finalizeThinking() {
     const secs = Math.max(1, Math.round((Date.now() - state.thinkingStartedAt) / 1000))
     const label = node.querySelector('.thinking-label')
     if (label) label.textContent = `Thought for ${secs}s`
+    const timer = node.querySelector('.thinking-timer')
+    if (timer) timer.remove()
     node.classList.remove('thinking-live')
   }
   state.currentThinkingEl = null
@@ -1485,13 +1579,14 @@ function finalizeThinking() {
 }
 
 /**
- * Build a collapsed reasoning block. `live` shows the animated "Thinking…"
+ * Build a collapsed reasoning block. `live` shows the animated "Thinking..."
  * affordance while deltas are still arriving; a persisted block is static and
  * always starts collapsed with a plain "Thinking" label.
  */
 function renderThinkingBlock(text, live = false) {
   const body = el('div', { class: 'thinking-body', text })
   const label = el('span', { class: 'thinking-label', text: live ? 'Thinking…' : 'Thinking' })
+  const timer = live ? el('span', { class: 'thinking-timer', text: '0s' }) : null
   const head = el('button', {
     type: 'button',
     class: 'thinking-head',
@@ -1502,6 +1597,7 @@ function renderThinkingBlock(text, live = false) {
   },
     el('span', { class: 'th-arrow', text: '▸' }),
     label,
+    timer,
     live ? el('span', { class: 'th-dots' }, el('i'), el('i'), el('i')) : null,
   )
   const block = el('div', { class: `msg thinking ${live ? 'thinking-live' : ''}` },
@@ -1578,6 +1674,7 @@ async function loadChatHistory(project) {
     const data = await api(`/api/projects/${project.id}/history`)
     const box = $('#chat-messages')
     box.replaceChildren()
+    state.steerNodes.clear()
     for (const message of data.messages || []) {
       if (Array.isArray(message.content)) {
         for (const block of message.content) {
@@ -1605,16 +1702,23 @@ async function sendMessage() {
   const project = activeProject()
   const input = $('#chat-input')
   const message = input.value.trim()
-  if (!project || !message || state.agentRunning) return
+  if (!project || !message) return
 
+  // Sending while the agent works steers the running turn instead of starting
+  // a new one; the transcript entry comes back over SSE (steer:queued) so every
+  // tab renders it in the same place.
+  const steering = state.agentRunning
   input.value = ''
-  addChatMessage('user', message)
-  state.toolNodes.clear()
-  setAgentRunning(true)
 
   const images = state.pendingImages.map((img) => img.dataUrl)
   clearImages()
-  hideReviewBar()
+
+  if (!steering) {
+    addChatMessage('user', message)
+    state.toolNodes.clear()
+    setAgentRunning(true)
+    hideReviewBar()
+  }
 
   try {
     await api(`/api/projects/${project.id}/chat`, {
@@ -1622,6 +1726,10 @@ async function sendMessage() {
       body: { message, mode: state.mode, images },
     })
   } catch (err) {
+    if (steering) {
+      addChatMessage('error', `Could not steer the running turn: ${err.message}`)
+      return
+    }
     setAgentRunning(false)
     if (err.payload?.needsKey) {
       addChatMessage('error', `${err.message}`)
@@ -1629,6 +1737,8 @@ async function sendMessage() {
     } else {
       addChatMessage('error', err.message)
     }
+  } finally {
+    input.focus()
   }
 }
 
@@ -1764,12 +1874,32 @@ function openSettings() {
   $('#settings-reviewcommit').checked = s.agent.reviewCommit === true
   $('#settings-maxsteps').value = s.agent.maxSteps || 24
   $('#settings-maxsteps-val').textContent = String(s.agent.maxSteps || 24)
+  
+  // New agent prompt fields
+  $('#settings-system-prompt').value = s.agent.systemPrompt || ''
+  $('#settings-assistant-prompt').value = s.agent.assistantPrompt || ''
+
   $('#settings-test-result').hidden = true
 
   $$('#settings-provider input').forEach((input) => {
     input.checked = input.value === s.provider
   })
   syncProviderVisibility()
+  
+  // Activate first tab by default
+  $$('#modal-settings .settings-tabs .tab').forEach(t => {
+    t.classList.remove('active')
+    t.setAttribute('aria-selected', 'false')
+  })
+  $$('#modal-settings .settings-panel').forEach(p => p.hidden = true)
+  const firstTab = $('#modal-settings .settings-tabs .tab[data-tab="text"]')
+  if (firstTab) {
+    firstTab.classList.add('active')
+    firstTab.setAttribute('aria-selected', 'true')
+  }
+  const firstPanel = $('#modal-settings .settings-panel[data-tab="text"]')
+  if (firstPanel) firstPanel.hidden = false
+  
   openModal('modal-settings')
 }
 
@@ -1778,6 +1908,24 @@ function syncProviderVisibility() {
   $('#settings-openai').hidden = chosen !== 'openai'
   $('#settings-anthropic').hidden = chosen !== 'anthropic'
   return chosen
+}
+
+/* Settings tabs handling */
+function initSettingsTabs() {
+  $$('#modal-settings .settings-tabs .tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      const tabName = tab.dataset.tab
+      $$('#modal-settings .settings-tabs .tab').forEach(t => {
+        t.classList.remove('active')
+        t.setAttribute('aria-selected', 'false')
+      })
+      tab.classList.add('active')
+      tab.setAttribute('aria-selected', 'true')
+      $$('#modal-settings .settings-panel').forEach(p => p.hidden = true)
+      const panel = $(`#modal-settings .settings-panel[data-tab="${tabName}"]`)
+      if (panel) panel.hidden = false
+    })
+  })
 }
 
 async function saveSettings() {
@@ -1789,6 +1937,8 @@ async function saveSettings() {
       autoCommit: $('#settings-autocommit').checked,
       reviewCommit: $('#settings-reviewcommit').checked,
       maxSteps: Number($('#settings-maxsteps').value),
+      systemPrompt: $('#settings-system-prompt').value.trim(),
+      assistantPrompt: $('#settings-assistant-prompt').value.trim(),
     },
   }
 
@@ -1958,10 +2108,33 @@ function wireGlobalEvents() {
   $('#design-clear').addEventListener('click', () => selectDesign(null))
 
   $('#btn-skills').addEventListener('click', openSkills)
-  $('#skill-search').addEventListener('input', (event) => {
-    state.skillFilter = event.target.value
-    renderSkillList()
-  })
+    $('#skill-search').addEventListener('input', (event) => {
+      state.skillFilter = event.target.value
+      renderSkillList()
+    })
+  
+    // Skills factory tab handling
+    $$('#modal-skills .skills-tabs .tab').forEach((tab) => {
+      tab.addEventListener('click', () => {
+        const tabName = tab.dataset.tab
+        $$('#modal-skills .skills-tabs .tab').forEach(t => t.classList.remove('active'))
+        tab.classList.add('active')
+        $$('#modal-skills [role="tabpanel"]').forEach(p => p.hidden = true)
+        const panel = $(`#modal-skills [role="tabpanel"][data-tab="${tabName}"]`)
+        if (panel) panel.hidden = false
+     
+        if (tabName === 'factory' && !state.skillsFactoryLoaded) {
+          loadSkillsFactory()
+        }
+        if (tabName === 'mcp' && !state.mcpFactoryLoaded) {
+          loadMCPFactory()
+        }
+      })
+    })
+  
+    // Initialize settings tabs
+    initSettingsTabs()
+  
   $('#btn-add-skill').addEventListener('click', () => openSkillEditor())
   $('#skill-edit-form').addEventListener('submit', saveSkillFromEditor)
   $('#skill-edit-cancel').addEventListener('click', () => {
@@ -2155,12 +2328,19 @@ function wireGlobalEvents() {
   })
 
   $('#btn-typecheck')?.addEventListener('click', runTypecheck)
-  $('#btn-export')?.addEventListener('click', exportProject)
-  $('#btn-restore')?.addEventListener('click', restoreCommit)
-  $('#import-project')?.addEventListener('click', openImport)
-  $('#modal-import-ok')?.addEventListener('click', doImport)
+    $('#btn-export')?.addEventListener('click', exportProject)
+    $('#btn-restore')?.addEventListener('click', restoreCommit)
+    $('#import-project')?.addEventListener('click', openImport)
+    $('#modal-import-ok')?.addEventListener('click', doImport)
 
-  const codeSearch = $('#code-search')
+    // MCP factory button
+    $('#btn-open-mcp-factory')?.addEventListener('click', () => {
+      const factoryTab = $('#modal-skills .skills-tabs .tab[data-tab="factory"]')
+      if (factoryTab) factoryTab.click()
+      openModal('modal-skills')
+    })
+
+    const codeSearch = $('#code-search')
   if (codeSearch) {
     codeSearch.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
@@ -2181,6 +2361,26 @@ function wireGlobalEvents() {
     })
   }
 
+  // MCP factory search
+    const mcpSearch = $('#mcp-factory-search')
+    if (mcpSearch) {
+      mcpSearch.addEventListener('input', (event) => {
+        state.mcpFactorySearch = event.target.value
+        state.mcpFactoryPage = 1
+        loadMCPFactory()
+      })
+    }
+  
+    // Skills factory search
+    const skillFactorySearch = $('#skill-factory-search')
+    if (skillFactorySearch) {
+      skillFactorySearch.addEventListener('input', (event) => {
+        state.skillsFactorySearch = event.target.value
+        state.skillsFactoryPage = 1
+        loadSkillsFactory()
+      })
+    }
+
   // Poll so status stays honest even if an SSE reconnect is missed.
   setInterval(() => {
     if (document.hidden) return
@@ -2192,6 +2392,398 @@ function wireGlobalEvents() {
       if (state.activeId) renderTopbar()
     }).catch(() => {})
   }, 12_000)
+}
+
+/* ---------------------------- skills factory (skills.sh) ---------------------------- */
+
+async function loadSkillsFactory() {
+  if (state.skillsFactoryLoading) return
+  state.skillsFactoryLoading = true
+  $('#skill-factory-loading').hidden = false
+  $('#skill-factory-list').replaceChildren()
+  
+  try {
+    const data = await api(`/api/skills-factory/search?q=${encodeURIComponent(state.skillsFactorySearch)}&page=${state.skillsFactoryPage}`)
+    state.skillsFactorySkills = data.skills || data.data || []
+    renderSkillsFactoryList()
+  } catch (err) {
+    toast(`Failed to load skills: ${err.message}`, 'error')
+    $('#skill-factory-list').append(el('div', { class: 'design-empty' }, `Error: ${err.message}`))
+  } finally {
+    state.skillsFactoryLoading = false
+    state.skillsFactoryLoaded = true
+    $('#skill-factory-loading').hidden = true
+  }
+}
+
+function renderSkillsFactoryList() {
+  const list = $('#skill-factory-list')
+  if (!list) return
+  
+  const q = state.skillsFactorySearch.trim().toLowerCase()
+  const matches = state.skillsFactorySkills.filter((s) => !q
+    || [s.name, s.title, s.description, s.shortDescription, ...(s.tags || []), ...(s.topics || [])].join(' ').toLowerCase().includes(q))
+
+  list.replaceChildren()
+  if (!matches.length) {
+    list.append(el('div', { class: 'design-empty' }, 'No skills match that search.'))
+    return
+  }
+
+  for (const skill of matches) {
+    const name = skill.name || skill.title
+    const description = skill.description || skill.shortDescription || ''
+    const tags = skill.tags || skill.topics || []
+    const installs = skill.installs || skill.weeklyInstalls || skill.totalInstalls || 0
+    
+    const card = el('div', { class: 'skill-card' },
+      el('button', {
+        type: 'button',
+        class: 'skill-main',
+        title: 'View skill details',
+        onclick: () => previewSkillsFactorySkill(skill),
+      },
+        el('span', { class: 'skill-icon', text: skill.icon || '🧩' }),
+        el('span', { class: 'skill-text' },
+          el('span', { class: 'dc-name' },
+            name,
+            el('span', { class: 'skill-badge external' }, 'skills.sh'),
+          ),
+          el('span', { class: 'dc-desc', text: description }),
+          el('span', { class: 'dc-tags' },
+            ...tags.map((t) => el('span', { class: 'dc-tag', text: t })),
+            installs ? el('span', { class: 'dc-tag installs', text: `${formatInstalls(installs)} installs` }) : null,
+          ),
+        ),
+      ),
+      el('div', { class: 'skill-edit-actions' },
+        el('button', {
+          type: 'button', class: 'btn btn-primary btn-xs', title: 'Import this skill',
+          onclick: () => importSkillsFactorySkill(skill),
+        }, 'Import'),
+      ),
+    )
+    list.append(card)
+  }
+  
+  // Add pagination if needed
+  if (state.skillsFactorySkills.length >= 20) {
+    const pagination = el('div', { class: 'skill-pagination' },
+      el('button', {
+        type: 'button', class: 'btn btn-ghost btn-sm',
+        disabled: state.skillsFactoryPage <= 1,
+        onclick: () => { state.skillsFactoryPage--; loadSkillsFactory() }
+      }, 'Previous'),
+      el('span', { class: 'pagination-info', text: `Page ${state.skillsFactoryPage}` }),
+      el('button', {
+        type: 'button', class: 'btn btn-ghost btn-sm',
+        onclick: () => { state.skillsFactoryPage++; loadSkillsFactory() }
+      }, 'Next'),
+    )
+    list.append(pagination)
+  }
+}
+
+async function previewSkillsFactorySkill(skill) {
+  const skillId = skill.id || skill.slug
+  try {
+    const data = await api(`/api/skills-factory/skill/${skillId}`)
+    showSkillPreview(data)
+  } catch (err) {
+    toast(`Failed to load skill preview: ${err.message}`, 'error')
+  }
+}
+
+function showSkillPreview(skillData) {
+  const name = skillData.name || skillData.title
+  const description = skillData.description || skillData.shortDescription || ''
+  const brief = skillData.brief || skillData.instructions || skillData.content || skillData.prompt || 'No instructions available'
+  const tags = skillData.tags || skillData.topics || []
+  
+  // Create a modal-like preview
+  const preview = el('div', { class: 'skill-preview-overlay' },
+    el('div', { class: 'skill-preview' },
+      el('div', { class: 'skill-preview-header' },
+        el('h4', { text: name }),
+        el('button', { class: 'btn btn-ghost btn-sm', onclick: () => preview.remove() }, 'Close'),
+      ),
+      el('p', { class: 'skill-preview-desc', text: description }),
+      el('div', { class: 'skill-preview-tags' },
+        ...tags.map((t) => el('span', { class: 'dc-tag', text: t })),
+      ),
+      el('details', { class: 'skill-preview-brief' },
+        el('summary', { text: 'Instructions (click to expand)' }),
+        el('pre', { text: brief }),
+      ),
+      el('div', { class: 'skill-preview-actions' },
+        el('button', {
+          type: 'button', class: 'btn btn-primary',
+          onclick: () => { preview.remove(); importSkillsFactorySkill(skillData) }
+        }, 'Import Skill'),
+      ),
+    ),
+  )
+  
+  document.body.append(preview)
+  preview.querySelector('.skill-preview').addEventListener('click', (e) => e.stopPropagation())
+  preview.addEventListener('click', () => preview.remove())
+}
+
+async function importSkillsFactorySkill(skill) {
+  const skillId = skill.id || skill.slug
+  try {
+    const result = await api('/api/skills-factory/import', {
+      method: 'POST',
+      body: { skillId, source: 'skills.sh' }
+    })
+    toast(`Imported "${result.name}"`, 'ok')
+    // Reload local skills
+    const skillsData = await api('/api/skills')
+    state.skills = skillsData.skills || []
+    renderSkillList()
+    openModal('modal-skills')
+  } catch (err) {
+    toast(`Failed to import skill: ${err.message}`, 'error')
+  }
+}
+
+function formatInstalls(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
+  return String(n)
+}
+
+/* ---------------------------- mcp factory (mcp.so) ---------------------------- */
+
+async function loadMCPFactory() {
+  if (state.mcpFactoryLoading) return
+  state.mcpFactoryLoading = true
+  $('#mcp-factory-loading').hidden = false
+  $('#mcp-factory-list').replaceChildren()
+  
+  try {
+    const [serversData, categoriesData] = await Promise.all([
+      api(`/api/mcp-factory/search?q=${encodeURIComponent(state.mcpFactorySearch)}&page=${state.mcpFactoryPage}`),
+      api('/api/mcp-factory/categories')
+    ])
+    state.mcpFactoryServers = serversData.servers || serversData.data || []
+    state.mcpFactoryCategories = categoriesData.categories || []
+    renderMCPFactoryList()
+  } catch (err) {
+    toast(`Failed to load MCP servers: ${err.message}`, 'error')
+    $('#mcp-factory-list').append(el('div', { class: 'design-empty' }, `Error: ${err.message}`))
+  } finally {
+    state.mcpFactoryLoading = false
+    state.mcpFactoryLoaded = true
+    $('#mcp-factory-loading').hidden = true
+  }
+}
+
+function renderMCPFactoryList() {
+  const list = $('#mcp-factory-list')
+  if (!list) return
+  
+  const q = state.mcpFactorySearch.trim().toLowerCase()
+  const matches = state.mcpFactoryServers.filter((s) => !q
+    || [s.name, s.description, s.category, ...(s.tags || [])].join(' ').toLowerCase().includes(q))
+
+  list.replaceChildren()
+  if (!matches.length) {
+    list.append(el('div', { class: 'design-empty' }, 'No MCP servers match that search.'))
+    return
+  }
+
+  for (const server of matches) {
+    const installed = state.mcpFactoryProjectServers.some(p => p.serverId === server.id)
+    
+    const card = el('div', { class: `skill-card ${installed ? 'on' : ''}` },
+      el('button', {
+        type: 'button',
+        class: 'skill-main',
+        title: installed ? 'Already added to project' : 'View server details',
+        onclick: () => previewMCPFactoryServer(server),
+      },
+        el('span', { class: 'skill-icon', text: server.icon || '🔌' }),
+        el('span', { class: 'skill-text' },
+          el('span', { class: 'dc-name' },
+            server.name,
+            installed ? el('span', { class: 'skill-badge installed' }, 'Added') : el('span', { class: 'skill-badge external' }, 'mcp.so'),
+          ),
+          el('span', { class: 'dc-desc', text: server.description || '' }),
+          el('span', { class: 'dc-tags' },
+            server.category ? el('span', { class: 'dc-tag', text: server.category }) : null,
+            ...(server.tags || []).map((t) => el('span', { class: 'dc-tag', text: t })),
+            server.stars ? el('span', { class: 'dc-tag stars', text: `⭐ ${server.stars}` }) : null,
+          ),
+        ),
+      ),
+      installed ? el('div', { class: 'skill-edit-actions' },
+        el('button', {
+          type: 'button', class: 'btn btn-danger btn-xs', title: 'Remove from project',
+          onclick: () => removeMCPFromProject(server.id),
+        }, 'Remove'),
+      ) : el('div', { class: 'skill-edit-actions' },
+        el('button', {
+          type: 'button', class: 'btn btn-primary btn-xs', title: 'Add to project',
+          onclick: () => addMCPToProject(server),
+        }, 'Add'),
+      ),
+    )
+    list.append(card)
+  }
+}
+
+async function previewMCPFactoryServer(server) {
+  try {
+    const data = await api(`/api/mcp-factory/server/${server.id}`)
+    showMCPPreview(data)
+  } catch (err) {
+    toast(`Failed to load server preview: ${err.message}`, 'error')
+  }
+}
+
+function showMCPPreview(serverData) {
+  const preview = el('div', { class: 'skill-preview-overlay' },
+    el('div', { class: 'skill-preview' },
+      el('div', { class: 'skill-preview-header' },
+        el('h4', { text: serverData.name }),
+        el('button', { class: 'btn btn-ghost btn-sm', onclick: () => preview.remove() }, 'Close'),
+      ),
+      el('p', { class: 'skill-preview-desc', text: serverData.description || '' }),
+      el('div', { class: 'skill-preview-details' },
+        el('div', { class: 'detail' },
+          el('span', { class: 'detail-label', text: 'Transport' }),
+          el('span', { class: 'detail-value', text: serverData.transport || 'stdio' }),
+        ),
+        serverData.command ? el('div', { class: 'detail' },
+          el('span', { class: 'detail-label', text: 'Command' }),
+          el('span', { class: 'detail-value mono', text: serverData.command }),
+        ) : null,
+        serverData.url ? el('div', { class: 'detail' },
+          el('span', { class: 'detail-label', text: 'URL' }),
+          el('span', { class: 'detail-value mono', text: serverData.url }),
+        ) : null,
+      ),
+      el('details', { class: 'skill-preview-brief' },
+        el('summary', { text: 'Environment Variables (click to expand)' }),
+        el('pre', { text: JSON.stringify(serverData.env || {}, null, 2) }),
+      ),
+      el('div', { class: 'skill-preview-actions' },
+        state.mcpFactoryProjectServers.some(p => p.serverId === serverData.id)
+          ? el('button', {
+              type: 'button', class: 'btn btn-danger',
+              onclick: () => { preview.remove(); removeMCPFromProject(serverData.id) }
+            }, 'Remove from Project')
+          : el('button', {
+              type: 'button', class: 'btn btn-primary',
+              onclick: () => { preview.remove(); addMCPToProject(serverData) }
+            }, 'Add to Project'),
+      ),
+    ),
+  )
+  
+  document.body.append(preview)
+  preview.querySelector('.skill-preview').addEventListener('click', (e) => e.stopPropagation())
+  preview.addEventListener('click', () => preview.remove())
+}
+
+async function addMCPToProject(server) {
+  const project = activeProject()
+  if (!project) { toast('No active project', 'error'); return }
+  
+  try {
+    const result = await api(`/api/projects/${project.id}/mcp`, {
+      method: 'POST',
+      body: { serverId: server.id }
+    })
+    toast(`Added "${result.server.name}" to project`, 'ok')
+    await loadProjectMCPServers()
+    renderMCPFactoryList()
+  } catch (err) {
+    toast(`Failed to add MCP server: ${err.message}`, 'error')
+  }
+}
+
+async function removeMCPFromProject(serverId) {
+  const project = activeProject()
+  if (!project) { toast('No active project', 'error'); return }
+  
+  try {
+    await api(`/api/projects/${project.id}/mcp/${serverId}`, { method: 'DELETE' })
+    toast('Removed from project', 'ok')
+    await loadProjectMCPServers()
+    renderMCPFactoryList()
+    renderMCPProjectList()
+  } catch (err) {
+    toast(`Failed to remove MCP server: ${err.message}`, 'error')
+  }
+}
+
+async function loadProjectMCPServers() {
+  const project = activeProject()
+  if (!project) { state.mcpFactoryProjectServers = []; return }
+  
+  try {
+    const data = await api(`/api/projects/${project.id}/mcp`)
+    state.mcpFactoryProjectServers = data.servers || []
+    renderMCPProjectList()
+  } catch (err) {
+    console.error('Failed to load project MCP servers:', err)
+  }
+}
+
+function renderMCPProjectList() {
+  const list = $('#mcp-project-list')
+  if (!list) return
+  
+  list.replaceChildren()
+  
+  if (!state.mcpFactoryProjectServers.length) {
+    list.append(el('div', { class: 'design-empty' }, 'No MCP servers configured for this project. Browse the factory to add one.'))
+    return
+  }
+  
+  for (const server of state.mcpFactoryProjectServers) {
+    const card = el('div', { class: `skill-card ${server.enabled ? 'on' : ''}` },
+      el('div', { class: 'skill-main' },
+        el('span', { class: 'skill-icon', text: server.icon || '🔌' }),
+        el('span', { class: 'skill-text' },
+          el('span', { class: 'dc-name' }, server.name),
+          el('span', { class: 'dc-desc', text: server.description || '' }),
+          el('span', { class: 'dc-tags' },
+            server.transport ? el('span', { class: 'dc-tag', text: server.transport }) : null,
+            el('span', { class: `dc-tag ${server.enabled ? 'enabled' : 'disabled'}`, text: server.enabled ? 'Enabled' : 'Disabled' }),
+          ),
+        ),
+      ),
+      el('div', { class: 'skill-edit-actions' },
+        el('button', {
+          type: 'button', class: 'btn btn-ghost btn-xs',
+          onclick: () => toggleMCPServer(server.serverId),
+        }, server.enabled ? 'Disable' : 'Enable'),
+        el('button', {
+          type: 'button', class: 'btn btn-danger btn-xs',
+          onclick: () => removeMCPFromProject(server.serverId),
+        }, 'Remove'),
+      ),
+    )
+    list.append(card)
+  }
+}
+
+async function toggleMCPServer(serverId) {
+  const project = activeProject()
+  if (!project) return
+  
+  try {
+    const result = await api(`/api/projects/${project.id}/mcp/${serverId}/toggle`, { method: 'POST' })
+    const server = state.mcpFactoryProjectServers.find(s => s.serverId === serverId)
+    if (server) server.enabled = result.server.enabled
+    renderMCPProjectList()
+    renderMCPFactoryList()
+  } catch (err) {
+    toast(`Failed to toggle: ${err.message}`, 'error')
+  }
 }
 
 initTheme()

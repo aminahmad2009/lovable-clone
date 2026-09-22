@@ -3,11 +3,85 @@ import { spawn } from 'node:child_process'
 import { readFile, writeFile, mkdir, rm, readdir, stat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { generateImage } from './llm/image.js'
+import { createMCPClient, mcpToolToDefinition, executeMCPTool } from './mcp.js'
 
 const IS_WINDOWS = process.platform === 'win32'
 const MAX_READ_BYTES = 400_000
 const MAX_LIST_ENTRIES = 400
 const COMMAND_TIMEOUT = 180_000
+
+/** Global MCP client cache per project */
+const mcpClients = new Map()
+
+/**
+ * Get or create MCP clients for a project
+ */
+async function getMCPClients(projectId, mcpServers) {
+  const cacheKey = projectId
+  let clients = mcpClients.get(cacheKey)
+  
+  if (!clients) {
+    clients = new Map()
+    mcpClients.set(cacheKey, clients)
+  }
+  
+  // Connect to any new servers
+  for (const server of mcpServers) {
+    if (!server.enabled) continue
+    if (!clients.has(server.serverId)) {
+      try {
+        const client = await createMCPClient(server)
+        clients.set(server.serverId, { client, config: server })
+      } catch (err) {
+        console.error(`[MCP] Failed to connect to ${server.name}:`, err.message)
+      }
+    }
+  }
+  
+  return clients
+}
+
+/**
+ * Build MCP tool definitions from connected servers
+ */
+async function buildMCPToolDefinitions(projectId, mcpServers) {
+  const clients = await getMCPClients(projectId, mcpServers)
+  const definitions = []
+  
+  for (const [serverId, { client, config }] of clients) {
+    try {
+      const tools = await client.listTools()
+      for (const tool of tools) {
+        definitions.push(mcpToolToDefinition(tool, serverId))
+      }
+    } catch (err) {
+      console.error(`[MCP] Failed to list tools for ${serverId}:`, err.message)
+    }
+  }
+  
+  return definitions
+}
+
+/**
+ * Execute an MCP tool call
+ */
+async function executeMCPToolCall(projectId, toolName, args, mcpServers) {
+  // toolName format: mcp_<serverId>_<toolName>
+  const match = toolName.match(/^mcp_(.+?)_(.+)$/)
+  if (!match) {
+    throw new Error(`Invalid MCP tool name format: ${toolName}`)
+  }
+  
+  const [, serverId, mcpToolName] = match
+  const clients = await getMCPClients(projectId, mcpServers)
+  const entry = clients.get(serverId)
+  
+  if (!entry) {
+    throw new Error(`MCP server not connected: ${serverId}`)
+  }
+  
+  return await executeMCPTool(entry.client, mcpToolName, args)
+}
 
 const IGNORED_DIRS = new Set(['node_modules', '.git', 'dist', '.vite', '.cache', 'coverage'])
 
@@ -369,6 +443,13 @@ export const TOOL_DEFINITIONS = [
   },
 ]
 
+/** Build dynamic tool definitions including MCP tools for a project */
+export async function getToolDefinitions(projectId, mcpServers) {
+  const baseDefinitions = [...TOOL_DEFINITIONS]
+  const mcpDefinitions = await buildMCPToolDefinitions(projectId, mcpServers || [])
+  return [...baseDefinitions, ...mcpDefinitions]
+}
+
 const HANDLERS = {
   list_files: listFiles,
   read_file: readFileTool,
@@ -381,9 +462,13 @@ const HANDLERS = {
 
 /** Execute one tool call. Never throws — failures come back as text for the model. */
 export async function executeTool(name, args, ctx = {}) {
-  const { root, onLog } = ctx
+  const { root, onLog, projectId, mcpServers } = ctx
   try {
     if (name === 'run_command') return await runCommand(root, args || {}, onLog)
+    if (name.startsWith('mcp_')) {
+      if (!projectId) return 'ERROR: MCP tools require projectId in context'
+      return await executeMCPToolCall(projectId, name, args || {}, mcpServers || [])
+    }
     const handler = HANDLERS[name]
     if (!handler) return `Unknown tool: ${name}`
     return await handler(root, args || {}, ctx)

@@ -1,0 +1,31 @@
+{
+  "id": "skill-unique-identifier",
+  "name": "Skill Display Name",
+  "icon": "🔧",
+  "description": "Detailed description of what the skill does, its purpose, and how it helps users. This should be a comprehensive explanation of the skill's functionality.",
+  "tags": ["category", "specific-tag", "another-tag"],
+  "brief": "Skill: SKILL NAME. Short summary of what the skill does.\n- Key point 1 about the skill\n- Key point 2 about the skill\n- Key point 3 about the skill\n- Usage instructions or important notes",
+  "source": "skills.sh|builtin|custom",
+  "installs": 0,
+  "weeklyInstalls": [],
+  "isOfficial": false,
+  "url": "https://example.com/path/to/skill/file.js",
+  "filePath": "path/to/local/skill/file.js",
+  "version": "1.0.0",
+  "author": "Skill Author",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/author/skill-repo.git"
+  },
+  "keywords": ["skill", "ai", "agent", "lovable"],
+  "dependencies": {},
+  "devDependencies": {},
+  "peerDependencies": {},
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  }
+}

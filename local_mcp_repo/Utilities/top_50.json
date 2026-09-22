@@ -1,0 +1,24 @@
+[
+  {
+    "id": "time",
+    "name": "Time",
+    "icon": "🕐",
+    "description": "Time and timezone operations - current time, formatting, conversions.",
+    "category": "Utilities",
+    "tags": [
+      "time",
+      "date",
+      "timezone",
+      "utility"
+    ],
+    "transport": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@modelcontextprotocol/server-time"
+    ],
+    "env": {},
+    "stars": 300,
+    "verified": true
+  }
+]

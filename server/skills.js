@@ -241,6 +241,38 @@ export async function deleteSkill(id) {
   return true
 }
 
+/** Import an external skill (e.g., from skills.sh) and save it as a user skill. */
+export async function importExternalSkill(skillInput, metadata = {}) {
+  const user = await loadUserSkills()
+  
+  // Normalize the skill with metadata
+  const normalized = {
+    id: `ext-${metadata.source || 'external'}-${metadata.originalId || randomUUID().slice(0, 8)}`,
+    name: String(skillInput.name || '').trim(),
+    icon: String(skillInput.icon || '🧩').trim() || '🧩',
+    description: String(skillInput.description || '').trim(),
+    tags: Array.isArray(skillInput.tags)
+      ? skillInput.tags.map((t) => String(t).trim()).filter(Boolean).slice(0, 8)
+      : String(skillInput.tags || '').split(',').map((t) => t.trim()).filter(Boolean).slice(0, 8),
+    brief: String(skillInput.brief || '').trim(),
+    builtin: false,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    external: {
+      source: metadata.source || 'unknown',
+      originalId: metadata.originalId || null,
+      importedAt: Date.now(),
+    },
+  }
+  
+  if (!normalized.name) throw Object.assign(new Error('name is required'), { status: 400 })
+  if (!normalized.brief) throw Object.assign(new Error('brief is required'), { status: 400 })
+  
+  user.push(normalized)
+  await saveUserSkills(user)
+  return normalized
+}
+
 /**
  * The system-prompt fragment for a list of enabled skill ids, or '' when none.
  * Unknown ids are ignored so a deleted user skill never breaks a turn.

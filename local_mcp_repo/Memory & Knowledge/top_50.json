@@ -1,0 +1,24 @@
+[
+  {
+    "id": "memory",
+    "name": "Memory",
+    "icon": "🧠",
+    "description": "Persistent memory for AI agents - store and retrieve information across sessions.",
+    "category": "Memory & Knowledge",
+    "tags": [
+      "memory",
+      "knowledge",
+      "persistent",
+      "agent"
+    ],
+    "transport": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@modelcontextprotocol/server-memory"
+    ],
+    "env": {},
+    "stars": 900,
+    "verified": true
+  }
+]

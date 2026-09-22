@@ -74,6 +74,8 @@ export const DEFAULT_SETTINGS = {
     autoInstall: true,
     autoCommit: true,
     reviewCommit: false,
+    systemPrompt: '',
+    assistantPrompt: '',
   },
 }
 
