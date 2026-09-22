@@ -1,0 +1,16 @@
+[
+  {
+    "id": "motion",
+    "name": "Motion & Animation",
+    "icon": "✨",
+    "description": "Purposeful transitions, keyframes and micro-interactions that respect prefers-reduced-motion.",
+    "tags": [
+      "animation",
+      "polish",
+      "css"
+    ],
+    "brief": "Skill: MOTION & ANIMATION. Add motion with intent, not decoration.\n- Animate state changes the user should notice: hover/active affordances, enter/exit of lists and modals, value changes, loading progress.\n- Prefer transform and opacity (composited, cheap) over animating layout properties. Keep durations short (~120–300ms) with natural easing.\n- Wrap non-essential motion in a prefers-reduced-motion media query that reduces or removes it.\n- For complex sequences reach for a library (framer-motion) and install it before importing.",
+    "source": "builtin",
+    "installs": 0
+  }
+]

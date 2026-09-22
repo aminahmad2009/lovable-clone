@@ -1,0 +1,18 @@
+[
+  {
+    "id": "self-learning",
+    "name": "Self-Learning Agent",
+    "icon": "🧠",
+    "description": "Enables the agent to learn from its interactions, remember patterns, and improve over time by storing successful patterns and solutions.",
+    "tags": [
+      "learning",
+      "memory",
+      "agent",
+      "improvement",
+      "adaptive"
+    ],
+    "brief": "Skill: SELF-LEARNING AGENT. Enable continuous improvement through learning.\n- Store successful code patterns, solutions, and architectural decisions in a persistent knowledge base.\n- When encountering similar problems, retrieve and apply previously successful solutions.\n- Track which approaches work well for specific project types, frameworks, or problem domains.\n- Learn user preferences: coding style, naming conventions, architectural patterns.\n- Maintain a local knowledge file (.lovable-learnings.json) in the project root that persists across sessions.\n- Before starting a new task, check the knowledge base for relevant patterns.\n- After completing a task successfully, extract and store the key patterns used.\n- Learn from failures too: record what didn't work and why to avoid repeating mistakes.\n- Provide a \"learning summary\" at the end of each session showing what was learned.\n- Respect privacy: all learning data stays local in the project directory.\n- Allow users to review, edit, or clear the learning database at any time.",
+    "source": "builtin",
+    "installs": 0
+  }
+]

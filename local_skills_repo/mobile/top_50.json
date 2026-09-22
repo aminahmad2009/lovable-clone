@@ -1,0 +1,16 @@
+[
+  {
+    "id": "responsive",
+    "name": "Responsive Layout",
+    "icon": "📱",
+    "description": "Mobile-first fluid layouts, sensible breakpoints, no horizontal scroll, touch-friendly targets.",
+    "tags": [
+      "mobile",
+      "layout",
+      "css"
+    ],
+    "brief": "Skill: RESPONSIVE LAYOUT. Design mobile-first.\n- Base styles target small screens; layer larger layouts with min-width breakpoints (sm/md/lg/xl). Prefer fluid units (%, fr, clamp(), min()/max()) over fixed pixels.\n- No horizontal scrolling at any width. Long words and code wrap or scroll within their own container.\n- Grids collapse to a single column on narrow screens; navigation becomes a drawer or stacked menu.\n- Interactive targets are at least 40x40px with comfortable spacing for touch.\n- Test mentally at 375px, 768px and 1280px before finishing.",
+    "source": "builtin",
+    "installs": 0
+  }
+]

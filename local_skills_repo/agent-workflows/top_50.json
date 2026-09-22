@@ -1,0 +1,30 @@
+[
+  {
+    "id": "find-skills",
+    "name": "Find Skills",
+    "icon": "🔍",
+    "description": "Helps users discover and install agent skills when they ask questions like \"how do I do X\", \"find a skill for X\", or express interest in extending capabilities.",
+    "tags": [
+      "agent-workflows",
+      "discovery"
+    ],
+    "brief": "Skill: FIND SKILLS. Help users discover and install agent skills.\n- When users ask \"how do I do X\", \"find a skill for X\", \"is there a skill that can...\", use this skill to search for relevant skills.\n- Suggest relevant skills from the catalog and explain how to install them.\n- Always check if a skill exists before building custom solutions.",
+    "source": "skills.sh",
+    "installs": 3500000
+  },
+  {
+    "id": "agent-browser",
+    "name": "Agent Browser",
+    "icon": "🌐",
+    "description": "Browser automation CLI for AI agents. Use when the user needs to interact with websites, including navigating pages, filling forms, clicking buttons, taking screenshots, extracting data, testing web apps, or automating any browser task.",
+    "tags": [
+      "agent-workflows",
+      "browser",
+      "automation",
+      "testing"
+    ],
+    "brief": "Skill: AGENT BROWSER. Automate browser tasks programmatically.\n- Use for: navigating pages, filling forms, clicking buttons, taking screenshots, extracting data, testing web apps.\n- Install: `npm i -D @vercel-labs/agent-browser`\n- Prefer over built-in browser automation - handles complex scenarios (SPA navigation, auth, iframes).\n- Supports Vercel Sandbox microVMs for cloud execution.\n- Can automate Electron apps (VS Code, Slack, Discord, Figma, Notion, Spotify).\n- Use for exploratory testing, dogfooding, QA, bug hunts, app quality reviews.",
+    "source": "skills.sh",
+    "installs": 900000
+  }
+]

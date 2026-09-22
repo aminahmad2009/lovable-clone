@@ -1,0 +1,16 @@
+[
+  {
+    "id": "seo-metadata",
+    "name": "SEO & Metadata",
+    "icon": "🔍",
+    "description": "Document titles, meta descriptions, semantic headings and Open Graph tags per route.",
+    "tags": [
+      "seo",
+      "metadata",
+      "marketing"
+    ],
+    "brief": "Skill: SEO & METADATA.\n- Set a descriptive document title and meta description per route/view; keep headings in a single logical hierarchy (one h1, no skipped levels).\n- Add Open Graph and Twitter card tags for shareable pages, and a canonical URL where relevant.\n- Use descriptive, human-readable route paths and meaningful link text (not \"click here\").\n- Provide alt text for images and ensure the page renders meaningful content without client-side-only tricks that crawlers miss.",
+    "source": "builtin",
+    "installs": 0
+  }
+]

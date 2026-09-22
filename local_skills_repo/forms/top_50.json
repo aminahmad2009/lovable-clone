@@ -1,0 +1,16 @@
+[
+  {
+    "id": "forms-validation",
+    "name": "Forms & Validation",
+    "icon": "✅",
+    "description": "Controlled inputs, inline validation, clear error and success states, disabled-while-submitting.",
+    "tags": [
+      "forms",
+      "ux",
+      "validation"
+    ],
+    "brief": "Skill: FORMS & VALIDATION.\n- Inputs are controlled; validate on blur and on submit, showing inline field-level errors next to the offending input, plus a summary for the whole form when useful.\n- Disable the submit button and show a pending state while a request is in flight; re-enable and surface server errors on failure.\n- Mark required fields, use appropriate input types (email, tel, number, password) and autocomplete hints.\n- Show a clear success confirmation. Never lose the user's typed values on a validation failure.",
+    "source": "builtin",
+    "installs": 0
+  }
+]

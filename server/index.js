@@ -26,6 +26,70 @@ import { zipDirectory } from './zip.js'
 import { designCatalog, getDesign } from './designs.js'
 import { skillCatalog, getSkill, createSkill, updateSkill, deleteSkill } from './skills.js'
 
+// Skills factory: dynamic fetch from GitHub with fallback to curated list
+let skillsCache = null
+let skillsCacheTimestamp = 0
+const SKILLS_CACHE_TTL = 5 * 60 * 1000 // 5 minutes
+
+async function fetchSkillsFromGitHub() {
+  try {
+    // Fetch the list of skills directories
+    const response = await fetch('https://api.github.com/repos/vercel-labs/skills/contents/skills')
+    if (!response.ok) throw new Error(`GitHub API error: ${response.status}`)
+    const skillsDirs = await response.json()
+
+    // Fetch each skill's skill.json
+    const skillsPromises = skillsDirs
+      .filter(dir => dir.type === 'dir')
+      .map(async dir => {
+        try {
+          const skillResponse = await fetch(`https://raw.githubusercontent.com/vercel-labs/skills/main/skills/${dir.name}/skill.json`)
+          if (!skillResponse.ok) {
+            console.warn(`Failed to fetch skill.json for ${dir.name}: ${skillResponse.status}`)
+            return null
+          }
+          const skillData = await skillResponse.json()
+          return {
+            id: dir.name,
+            name: skillData.name || dir.name,
+            icon: '🧩', // Default icon, skill.json doesn't have icon
+            description: skillData.description || '',
+            tags: skillData.tags || [],
+            brief: skillData.brief || '',
+            source: 'skills.sh',
+            installs: skillData.installs || 0,
+            weeklyInstalls: skillData.weeklyInstalls || [],
+            isOfficial: skillData.isOfficial || false
+          }
+        } catch (err) {
+          console.error(`Error processing skill ${dir.name}:`, err)
+          return null
+        }
+      })
+
+    const skills = (await Promise.all(skillsPromises)).filter(Boolean)
+    return skills
+  } catch (err) {
+    console.error('Failed to fetch skills from GitHub, falling back to curated list:', err)
+    return null
+  }
+}
+
+async function getSkills() {
+  const now = Date.now()
+  if (skillsCache && (now - skillsCacheTimestamp) < SKILLS_CACHE_TTL) {
+    return skillsCache
+  }
+  const fetchedSkills = await fetchSkillsFromGitHub()
+  if (fetchedSkills) {
+    skillsCache = fetchedSkills
+    skillsCacheTimestamp = now
+    return skillsCache
+  }
+  // Fallback to curated list
+  return CURATED_SKILLS
+}
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
