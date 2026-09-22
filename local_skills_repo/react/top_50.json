@@ -1,0 +1,17 @@
+[
+  {
+    "id": "vercel-react-best-practices",
+    "name": "Vercel React Best Practices",
+    "icon": "⚡",
+    "description": "React and Next.js performance optimization guidelines from Vercel Engineering. Use when writing, reviewing, or refactoring React/Next.js code.",
+    "tags": [
+      "react",
+      "nextjs",
+      "performance",
+      "development"
+    ],
+    "brief": "Skill: VERCEL REACT BEST PRACTICES. Write performant React/Next.js code.\n- Use Server Components by default; Client Components only when needed (interactivity, hooks, browser APIs).\n- Optimize data fetching: parallel where possible, use Suspense boundaries, avoid waterfalls.\n- Use `next/image` for automatic optimization; specify width/height to prevent layout shift.\n- Minimize bundle size: dynamic imports for heavy components, tree-shake dependencies.\n- Prefer CSS Modules or Tailwind over CSS-in-JS for zero-runtime styling.\n- Use `useMemo`/`useCallback` only for measured hotspots - profile first.\n- Enable React Compiler (when stable) for automatic memoization.\n- Test with real-world data volumes, not toy datasets.",
+    "source": "skills.sh",
+    "installs": 732000
+  }
+]

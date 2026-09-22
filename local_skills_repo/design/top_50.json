@@ -1,0 +1,31 @@
+[
+  {
+    "id": "grill-me",
+    "name": "Grill Me",
+    "icon": "🔥",
+    "description": "A relentless interview to sharpen a plan or design. Challenges assumptions and pushes for clarity.",
+    "tags": [
+      "design",
+      "planning",
+      "critique"
+    ],
+    "brief": "Skill: GRILL ME. Conduct a rigorous interview to sharpen plans and designs.\n- Ask probing questions that expose weak assumptions and unclear requirements.\n- Challenge every design decision: \"Why this approach?\", \"What are the alternatives?\", \"What could go wrong?\".\n- Push for specific, measurable success criteria.\n- Don't accept vague answers - drill down until the plan is concrete and defensible.\n- Output a refined plan with risks, alternatives, and clear next steps.",
+    "source": "skills.sh",
+    "installs": 1200000
+  },
+  {
+    "id": "frontend-design",
+    "name": "Frontend Design",
+    "icon": "🎨",
+    "description": "Guidance for distinctive, intentional visual design when building new UI or reshaping an existing one. Helps with aesthetic direction, typography, and making choices that don't read as templated defaults.",
+    "tags": [
+      "design",
+      "ui",
+      "css",
+      "typography"
+    ],
+    "brief": "Skill: FRONTEND DESIGN. Create distinctive, intentional visual designs.\n- Avoid templated defaults - every design choice should be intentional.\n- Establish a clear typographic scale (headings, body, captions) with consistent line heights.\n- Choose a cohesive color palette with semantic roles (primary, secondary, accent, surface, text).\n- Use spacing systems (4px/8px grid) rather than arbitrary values.\n- Design for states: hover, focus, active, disabled, loading, empty, error.\n- Ensure accessibility: contrast ratios, focus indicators, semantic HTML.\n- Prefer CSS variables for theming and dark mode support.",
+    "source": "skills.sh",
+    "installs": 908000
+  }
+]

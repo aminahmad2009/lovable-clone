@@ -1,0 +1,16 @@
+[
+  {
+    "id": "dark-mode",
+    "name": "Dark Mode",
+    "icon": "🌗",
+    "description": "Theme tokens, a toggle, system-preference default and persisted choice.",
+    "tags": [
+      "theme",
+      "dark",
+      "css"
+    ],
+    "brief": "Skill: DARK MODE. Support light and dark themes.\n- Define color tokens once (CSS variables in an @theme block or :root) and consume them everywhere; never hardcode hex values in components.\n- Provide a theme toggle; default to the user's system preference (prefers-color-scheme) and persist an explicit choice to localStorage.\n- Ensure both themes meet contrast requirements — dark mode is not just inverted colors; adjust surface elevation and accent tones per theme.",
+    "source": "builtin",
+    "installs": 0
+  }
+]
