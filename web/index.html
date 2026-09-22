@@ -78,7 +78,6 @@
               <button class="tab active" data-view="preview">Preview</button>
               <button class="tab" data-view="code">Code</button>
               <button class="tab" data-view="history">History</button>
-              <button class="tab" data-view="mcp">MCP <span id="mcp-badge" class="badge" hidden></span></button>
               <button class="tab" data-view="logs">Logs <span id="log-badge" class="badge" hidden></span></button>
             </nav>
 
@@ -170,16 +169,6 @@
             </div>
             <pre id="log-view" class="log-view mono"></pre>
           </div>
-
-          <!-- mcp -->
-          <div class="view" id="view-mcp" hidden>
-            <div class="pane-label">
-              MCP Servers
-              <span class="spacer"></span>
-              <button id="btn-open-mcp-factory" class="btn btn-primary btn-sm">Browse Factory</button>
-            </div>
-            <div id="mcp-project-list" class="design-grid skill-list"></div>
-          </div>
         </section>
       </main>
 
@@ -263,56 +252,47 @@
 
       <div class="modal modal-wide" id="modal-settings" hidden>
         <h3>Settings</h3>
-        
-        <div class="settings-tabs" role="tablist" aria-label="Settings categories">
-          <button class="tab active" data-tab="text" role="tab" aria-selected="true">Text Generation</button>
-          <button class="tab" data-tab="image" role="tab" aria-selected="false">Image Generation</button>
-          <button class="tab" data-tab="general" role="tab" aria-selected="false">General</button>
-          <button class="tab" data-tab="agent" role="tab" aria-selected="false">Agent Prompt</button>
+
+        <div class="field">
+          <span>Provider</span>
+          <div class="radio-row" id="settings-provider"></div>
         </div>
 
-        <div id="settings-text" class="settings-panel" role="tabpanel" data-tab="text">
+        <div id="settings-openai" class="provider-block">
           <div class="field">
-            <span>Provider</span>
-            <div class="radio-row" id="settings-provider"></div>
+            <span>Preset</span>
+            <select id="settings-preset"></select>
           </div>
-
-          <div id="settings-openai" class="provider-block">
-            <div class="field">
-              <span>Preset</span>
-              <select id="settings-preset"></select>
-            </div>
-            <label class="field">
-              <span>API key</span>
-              <input id="settings-openai-key" type="password" placeholder="sk-…" autocomplete="off" />
-            </label>
-            <label class="field">
-              <span>Base URL</span>
-              <input id="settings-openai-base" type="text" placeholder="https://api.openai.com/v1" autocomplete="off" />
-            </label>
-            <label class="field">
-              <span>Model</span>
-              <input id="settings-openai-model" type="text" placeholder="gpt-4o" autocomplete="off" />
-            </label>
-          </div>
-
-          <div id="settings-anthropic" class="provider-block" hidden>
-            <label class="field">
-              <span>API key</span>
-              <input id="settings-anthropic-key" type="password" placeholder="sk-ant-…" autocomplete="off" />
-            </label>
-            <label class="field">
-              <span>Base URL</span>
-              <input id="settings-anthropic-base" type="text" placeholder="https://api.anthropic.com" autocomplete="off" />
-            </label>
-            <label class="field">
-              <span>Model</span>
-              <input id="settings-anthropic-model" type="text" placeholder="claude-sonnet-4-5" autocomplete="off" />
-            </label>
-          </div>
+          <label class="field">
+            <span>API key</span>
+            <input id="settings-openai-key" type="password" placeholder="sk-…" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>Base URL</span>
+            <input id="settings-openai-base" type="text" placeholder="https://api.openai.com/v1" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>Model</span>
+            <input id="settings-openai-model" type="text" placeholder="gpt-4o" autocomplete="off" />
+          </label>
         </div>
 
-        <div id="settings-image" class="settings-panel" role="tabpanel" data-tab="image" hidden>
+        <div id="settings-anthropic" class="provider-block" hidden>
+          <label class="field">
+            <span>API key</span>
+            <input id="settings-anthropic-key" type="password" placeholder="sk-ant-…" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>Base URL</span>
+            <input id="settings-anthropic-base" type="text" placeholder="https://api.anthropic.com" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>Model</span>
+            <input id="settings-anthropic-model" type="text" placeholder="claude-sonnet-4-5" autocomplete="off" />
+          </label>
+        </div>
+
+        <div id="settings-image" class="provider-block image-block">
           <div class="field">
             <span>Image model <em id="settings-image-state" class="muted"></em></span>
             <p class="muted small" style="margin:2px 0 8px">
@@ -343,53 +323,27 @@
           <div id="settings-image-result" class="test-result" hidden></div>
         </div>
 
-        <div id="settings-general" class="settings-panel" role="tabpanel" data-tab="general" hidden>
-          <div class="field">
-            <span>Agent</span>
-            <div class="checkbox-row">
-              <label><input type="checkbox" id="settings-autoinstall" /> Auto-install when package.json changes</label>
-              <label><input type="checkbox" id="settings-autocommit" /> Auto-commit after each turn</label>
-              <label><input type="checkbox" id="settings-reviewcommit" /> Review changes before committing (approve or revert each turn)</label>
-            </div>
-          </div>
-          <label class="field">
-            <span>Max steps per turn <em id="settings-maxsteps-val" class="muted">24</em></span>
-            <input id="settings-maxsteps" type="range" min="4" max="60" step="2" />
-          </label>
-        </div>
-
-        <div id="settings-agent" class="settings-panel" role="tabpanel" data-tab="agent" hidden>
-          <div class="field">
-            <span>System Prompt</span>
-            <p class="muted small" style="margin:2px 0 8px">
-              Additional instructions appended to the system prompt. Use this to define coding standards, architectural patterns, or project-specific rules the agent should always follow.
-            </p>
-          </div>
-          <label class="field">
-            <textarea id="settings-system-prompt" class="skill-brief" rows="6" placeholder="e.g. Always use TypeScript strict mode. Prefer functional components. Use Tailwind for styling..." autocomplete="off"></textarea>
-          </label>
-          <div class="field">
-            <span>Assistant Prompt</span>
-            <p class="muted small" style="margin:2px 0 8px">
-              Instructions for the agent's behavior when responding. Define tone, verbosity, and interaction style.
-            </p>
-          </div>
-          <label class="field">
-            <textarea id="settings-assistant-prompt" class="skill-brief" rows="6" placeholder="e.g. Be concise. Show code first, explain after. Prefer practical solutions over theoretical ones..." autocomplete="off"></textarea>
-          </label>
-        </div>
-
         <div class="field">
-          <p class="muted small">
-            Keys are stored in <code class="mono">data/settings.json</code> on this machine only.
-            Environment variables <code class="mono">OPENAI_API_KEY</code>,
-            <code class="mono">OPENAI_BASE_URL</code>, <code class="mono">OPENAI_MODEL</code>,
-            <code class="mono">IMAGE_API_KEY</code>, <code class="mono">IMAGE_BASE_URL</code>,
-            <code class="mono">IMAGE_MODEL</code> are also read and take effect when a field is left blank.
-          </p>
+          <span>Agent</span>          <div class="checkbox-row">
+            <label><input type="checkbox" id="settings-autoinstall" /> Auto-install when package.json changes</label>
+            <label><input type="checkbox" id="settings-autocommit" /> Auto-commit after each turn</label>
+            <label><input type="checkbox" id="settings-reviewcommit" /> Review changes before committing (approve or revert each turn)</label>
+          </div>
         </div>
+        <label class="field">
+          <span>Max steps per turn <em id="settings-maxsteps-val" class="muted">24</em></span>
+          <input id="settings-maxsteps" type="range" min="4" max="60" step="2" />
+        </label>
 
         <div id="settings-test-result" class="test-result" hidden></div>
+
+        <p class="muted small">
+          Keys are stored in <code class="mono">data/settings.json</code> on this machine only.
+          Environment variables <code class="mono">OPENAI_API_KEY</code>,
+          <code class="mono">OPENAI_BASE_URL</code>, <code class="mono">OPENAI_MODEL</code>,
+          <code class="mono">IMAGE_API_KEY</code>, <code class="mono">IMAGE_BASE_URL</code>,
+          <code class="mono">IMAGE_MODEL</code> are also read and take effect when a field is left blank.
+        </p>
 
         <div class="modal-actions">
           <button type="button" class="btn btn-ghost" data-close>Close</button>
@@ -430,35 +384,10 @@
           each turn.
         </p>
         <div class="skills-toolbar">
-          <div class="skills-tabs" role="tablist" aria-label="Skills source">
-            <button class="tab active" data-tab="local" role="tab" aria-selected="true">Local Skills</button>
-            <button class="tab" data-tab="factory" role="tab" aria-selected="false">Skills.sh Factory</button>
-            <button class="tab" data-tab="mcp" role="tab" aria-selected="false">MCP Factory</button>
-          </div>
-          <div class="skills-toolbar-right">
-            <input id="skill-search" class="design-search" type="text" placeholder="Search skills, tags…" autocomplete="off" />
-            <button type="button" id="btn-add-skill" class="btn btn-primary btn-sm">+ Add skill</button>
-          </div>
+          <input id="skill-search" class="design-search" type="text" placeholder="Search skills, tags…" autocomplete="off" />
+          <button type="button" id="btn-add-skill" class="btn btn-primary btn-sm">+ Add skill</button>
         </div>
-        <div id="skill-list" class="design-grid skill-list" role="tabpanel" data-tab="local"></div>
-        <div id="skill-factory-list" class="design-grid skill-list" role="tabpanel" data-tab="factory" hidden>
-          <div class="factory-toolbar">
-            <input id="skill-factory-search" class="design-search" type="text" placeholder="Search skills.sh…" autocomplete="off" />
-          </div>
-        </div>
-        <div id="mcp-factory-list" class="design-grid skill-list" role="tabpanel" data-tab="mcp" hidden>
-          <div class="factory-toolbar">
-            <input id="mcp-factory-search" class="design-search" type="text" placeholder="Search mcp.so…" autocomplete="off" />
-          </div>
-        </div>
-        <div id="skill-factory-loading" class="loading-indicator" hidden>
-          <div class="spinner"></div>
-          <span>Loading skills from skills.sh…</span>
-        </div>
-        <div id="mcp-factory-loading" class="loading-indicator" hidden>
-          <div class="spinner"></div>
-          <span>Loading MCP servers from mcp.so…</span>
-        </div>
+        <div id="skill-list" class="design-grid skill-list"></div>
         <div class="modal-actions">
           <span id="skills-enabled-count" class="muted small"></span>
           <span class="spacer"></span>

@@ -47,20 +47,6 @@ export function metaPath(id) {
   return path.join(META_DIR, id)
 }
 
-/** Get MCP servers configured for a project */
-export async function getProjectMCP(projectId) {
-  const metaDir = metaPath(projectId)
-  const mcpFile = path.join(metaDir, 'mcp.json')
-  
-  try {
-    const raw = await readFile(mcpFile, 'utf8')
-    const data = JSON.parse(raw)
-    return data.servers || []
-  } catch {
-    return []
-  }
-}
-
 /** Serialize a project for the API. Runtime status is injected by the caller. */
 function toPublic(project, runtime = {}) {
   return {
